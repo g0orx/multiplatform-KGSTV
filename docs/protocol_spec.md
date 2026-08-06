@@ -194,6 +194,33 @@ Rust implementasyonunda (ya da bir sonraki Python iterasyonunda) **ton-korelasyo
 matched-filter) tabanlı bir 4-seviye demodülatör** gerekiyor — bu, gerçek 16×16 JPEG blok
 içeriğini görmek için son eksik parça.
 
+### ✅ Tam Transmisyon Yürüyüşü (Frame Walking) — Gerçek Görüntü Blokları Çıkarıldı
+
+`research/decoder/frame_walker.py`, ton-korelasyon demodülatörü kullanarak `KG-STV_MSK_Norm.wav`
+kaydının **tamamını** (148.9 saniye) baştan sona dolaştı. Sonuç: 5 kez tekrarlanan çağrı işareti
+duyurusu (`com=6, "TEST3"`, hepsi CRC-valid), ardından **22 farklı koordinatta gerçek görüntü
+bloğu (`com=1`)**, çoğu geçerli CRC ile. Bu şunu kesinleştiriyor:
+
+- Ardışık frame'ler arasında **preamble YOK, sadece 63-bit senkron kelimesi tekrarlanıyor**
+  (256-bit preamble sadece transmisyonun en başında bir kez gönderiliyor).
+- Header'daki `x`,`y` alanları gerçekten blok koordinatı olarak davranıyor (0-19, 0-14 aralığında,
+  320×240/16×16=20×15 blok ızgarasıyla tam uyumlu).
+- `size` alanı blok başına **değişken** (JPEG sıkıştırmasının doğası — düz/tek renk alanlar çok
+  kısa, detaylı alanlar daha uzun); bit sayısı 8'in katı olmak zorunda değil (örn. 378 bit) —
+  bu, bloğun **standart JPEG dosya formatı değil, salt entropy-coded bitstream** (byte hizalama
+  veya JPEG marker/stuffing olmadan) olarak paketlendiğini gösteriyor.
+- Bazı düz/tekrarlı görüntü alanları (örn. gökyüzü gibi tek renkli bölgeler) **birebir aynı kısa
+  bayt dizisini** üretiyor (`6532994ca0` dört farklı koordinatta tekrarlandı) — DC-baskın,
+  AC-katsayıları sıfır olan JPEG blokları için beklenen davranış (Huffman EOB kısalığı).
+- CRC hatası veren bloklar muhtemelen ya gerçek kanal bozulması (gerçek RF/ses kaydı gürültüsü)
+  ya da 148 saniyelik kayıt boyunca birikmiş küçük saat kayması (tek bir sabit `anchor` tüm
+  dosya için kullanıldı) — üretim kalitesinde bir decoder için sembol-bazlı zamanlama kurtarma
+  (timing recovery loop) gerekecek.
+
+**Sonraki adım:** CRC-valid blok baytlarını gerçek bir baseline-JPEG Huffman/DCT decoder'a
+besleyip (varsayılan/standart tablolarla dene, tutmazsa `kgstv.exe`'den tabloları çıkar) piksel
+verisine çevirmek — bu, "resmin encode/decode" sorusunun son parçası.
+
 ### Hâlâ Doğrulanması Gereken (görüntü modu için)
 
 Yukarıdakiler **metin + NORM + MSK** kombinasyonu için kanıtlanmış. Görüntü modu için ek doğrulama
