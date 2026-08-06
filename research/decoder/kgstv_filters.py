@@ -46,6 +46,58 @@ NATIVE_SAMPLE_RATE = 44100
 DECIMATED_SAMPLE_RATE = NATIVE_SAMPLE_RATE / DECIMATION_FACTOR  # 11025
 
 
+# 51-tap, merkez katsayı 0.0, tam antisimetrik — Hilbert dönüştürücü (quadrature/imag bileşen üretir)
+FILTER3 = [
+    -0.00589720752, -4.0817023e-19, -0.00592987191, 3.01571897e-16, -0.00882375805,
+    2.61318234e-16, -0.0125953651, 3.95410658e-16, -0.017460947, 5.61850573e-17,
+    -0.0237307016, 1.41339571e-16, -0.0318879867, 1.62852481e-16, -0.042756742,
+    7.62289792e-17, -0.0578935177, -2.90024081e-17, -0.0806522041, 1.38098657e-16,
+    -0.119803225, 5.83874758e-17, -0.207625476, -6.45985193e-17, -0.635081148, 0.0,
+    0.635081148, 6.45985193e-17, 0.207625476, -5.83874758e-17, 0.119803225,
+    -1.38098657e-16, 0.0806522041, 2.90024081e-17, 0.0578935177, -7.62289792e-17,
+    0.042756742, -1.62852481e-16, 0.0318879867, -1.41339571e-16, 0.0237307016,
+    -5.61850573e-17, 0.017460947, -3.95410658e-16, 0.0125953651, -2.61318234e-16,
+    0.00882375805, -3.01571897e-16, 0.00592987191, 4.0817023e-19, 0.00589720752,
+]
+
+# 51-tap, merkez katsayı 0.125, simetrik lowpass — anlık frekans kestiriminin son yumuşatması
+FILTER4 = [
+    -9.9340058e-05, 1.72019972e-19, 0.00028714131, 0.000792037935, 0.00147192597,
+    0.00218682451, 0.00269771345, 0.00269676853, 0.00187211088, -1.51408991e-18,
+    -0.0029525041, -0.0067388816, -0.0107854532, -0.0142074089, -0.0159003842,
+    -0.014703415, -0.00961139964, 3.72448919e-18, 0.0141826817, 0.0323023863,
+    0.0530364151, 0.0744962753, 0.0944639542, 0.110706242, 0.121313306, 0.125,
+    0.121313306, 0.110706242, 0.0944639542, 0.0744962753, 0.0530364151,
+    0.0323023863, 0.0141826817, 3.72448919e-18, -0.00961139964, -0.014703415,
+    -0.0159003842, -0.0142074089, -0.0107854532, -0.0067388816, -0.0029525041,
+    -1.51408991e-18, 0.00187211088, 0.00269676853, 0.00269771345, 0.00218682451,
+    0.00147192597, 0.000792037935, 0.00028714131, 1.72019972e-19, -9.9340058e-05,
+]
+
+# Faz açma (unwrap) sabiti — assembly'de tam olarak bulundu: 0x403bc4 = 2π
+TWO_PI = 6.283185307179586
+
+
+def apply_authentic_discriminator(samples_44100):
+    """Tam RX zincirini (4 filtre + Hilbert + faz-farkı) uygular.
+    Girdi: 44100Hz mono float dizisi. Çıktı: (11025Hz'de anlık frekans dizisi, Hz).
+    NOT: Bu implementasyon mimariyi doğru şekilde yansıtıyor (kgstv.exe disassembly'sinden),
+    ancak Hilbert işaret kuralı / faz yönü tam olarak assembly ile bit-eşleşmiyor —
+    basit karmaşık-mixing yaklaşımı (kgstv_decode.fsk_discriminator) hâlâ daha güvenilir.
+    Bkz. docs/protocol_spec.md, '4L-FSK' bölümü.
+    """
+    from scipy.signal import lfilter
+    import numpy as np
+    f1 = lfilter(FILTER1, [1.0], samples_44100)
+    dec = f1[::DECIMATION_FACTOR]
+    real = lfilter(FILTER2, [1.0], dec)
+    imag = lfilter(FILTER3, [1.0], real)
+    phase = np.arctan2(imag, real)
+    unwrapped = np.unwrap(phase)
+    freq = np.diff(unwrapped) * DECIMATED_SAMPLE_RATE / TWO_PI
+    return lfilter(FILTER4, [1.0], freq)
+
+
 def apply_authentic_frontend(samples_44100):
     """kgstv.exe'nin gerçek ön-uç filtre zincirini uygular. Girdi: 44100Hz mono float dizisi.
     Çıktı: (11025Hz'e decimate edilmiş, bandpass filtrelenmiş sinyal)."""

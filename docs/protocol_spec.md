@@ -307,6 +307,35 @@ ya `kgstv.exe`'nin ilgili fonksiyonlarını disassemble etmemiz ya da gerçek bi
     bilinen-düz-metin varsayımımız bu spesifik kayıtlar için geçersiz. Gerçek metin bilinmeden
     (ya da RX'in sembol-karar/senkron mantığının tam izlenmesiyle) kalibrasyon tamamlanamıyor.
 
+-3. **RX zincirinin TAMAMI çıkarıldı: 4 gerçek FIR filtre + Hilbert dönüşümü + faz-farkı
+    ayrıştırıcı (discriminator).** Disassembly'e devam edilince şu tam mimari ortaya çıktı:
+    ```
+    int16 PCM (44100Hz)
+      → FILTER1 (51-tap anti-alias lowpass)
+      → 4'e decimate (→11025Hz)
+      → FILTER2 (51-tap bandpass, ~900-2000Hz — KG-STV ton bandı)
+      → FILTER3 (51-tap Hilbert dönüştürücü — merkez katsayı TAM 0.0, tam antisimetrik
+                  → quadrature/imajiner bileşen üretiyor)
+      → faz = atan2(FILTER3_çıkışı, FILTER2_çıkışı)   [sarılmış, -π..π]
+      → faz açma (unwrap): ardışık farkı ±2π (0x403bc4'te bulunan sabit, TAM 6.283185307179586)
+        ile kıyaslayıp gerektiğinde ekleyip/çıkararak sürekli hale getiriyor
+      → anlık frekans = d(açılmış_faz)/dt × örnekleme_hızı/2π
+      → FILTER4 (51-tap simetrik lowpass, merkez=0.125 — frekans kestirimini yumuşatıyor)
+      → [sembol karar mantığı — henüz izlenmedi]
+    ```
+    Bu, **klasik bir Hilbert-dönüşümlü FM ayrıştırıcı** — kavramsal olarak bizim
+    `fsk_discriminator` yaklaşımımızla (karmaşık taşıyıcıya indirip açı-farkı almak) **birebir
+    aynı felsefe**, sadece IIR Butterworth yerine bu 4 gerçek FIR filtreyi kullanıyor.
+
+    Bu tam zinciri (`research/decoder/kgstv_filters.py::apply_authentic_discriminator`)
+    Python'da uygulayıp `.10_scale` örneğinde senkron aramasını tekrarladım: **sonuç daha
+    kötü çıktı** (err=16/63, basit yaklaşımın err=0'ına kıyasla) — muhtemelen Hilbert işaret
+    kuralı (`atan2` argüman sırası) ya da faz yönü konvansiyonunda küçük bir uyumsuzluk var;
+    tam assembly ile bit-eşleşme için sabır isteyen ayrıca bir hata ayıklama gerekiyor.
+    **Bu noktada araştırma durduruldu** — mimari tamamen anlaşıldı ve belgelendi, ancak son
+    %100 bit-doğru replikasyon (ve olası known-plaintext problemi) hâlâ açık. Basit
+    karmaşık-mixing yaklaşımı (MSK için zaten kanıtlanmış) üretim için yeterli.
+
 -1. **Modülatör formülü kgstv.exe disassembly ile bulundu** (radare2, fonksiyon @0x405f94,
     frekans sabitleri @0x4068e8 civarı). Gerçek x87 FPU kodu:
     ```
