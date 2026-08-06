@@ -8,7 +8,6 @@ import numpy as np
 from scipy.io import wavfile
 from scipy import signal
 
-SR_TARGET = 44100
 BAUD = 1200.0
 
 SYNC_WORD = "000011100001001000110110010110101110111100110001010100111111010"

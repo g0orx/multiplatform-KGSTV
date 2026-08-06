@@ -4,7 +4,6 @@ More robust than the instantaneous-frequency discriminator for noisier/longer ca
 import numpy as np
 from scipy import signal
 
-SR_ASSUMED = 44100
 BAUD = 1200.0
 
 MSK_FREQS = [1200.0, 1800.0]           # bit 0, bit 1
