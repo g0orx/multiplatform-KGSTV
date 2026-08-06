@@ -285,6 +285,31 @@ readme.txt bit-seviyesinde çerçeveyi tarif ediyor ama şunlar hâlâ açık de
 ya `kgstv.exe`'nin ilgili fonksiyonlarını disassemble etmemiz ya da gerçek bir off-air kayıt
 üzerinde bit-eşleştirme yapmamız gerekiyor:
 
+-1. **Modülatör formülü kgstv.exe disassembly ile bulundu** (radare2, fonksiyon @0x405f94,
+    frekans sabitleri @0x4068e8 civarı). Gerçek x87 FPU kodu:
+    ```
+    ; fld qword [seçilen seviye değeri, -1.0..+1.0 aralığında, dallanmayla seçiliyor]
+    fmul dword [0x4068e8]   ; × 300.0
+    fadd dword [0x4068ec]   ; + 1500.0   -> frekans (Hz)
+    fmul qword [0x4068f0]   ; × 2π (0x401921FB54442D18 = 6.283185307179586)
+    fmul qword [0x51974c]   ; × (muhtemelen 1/sample_rate)
+    fadd qword [0x4f64a0]   ; faz akümülatörüne ekle (çalışma zamanı durumu)
+    fstp qword [0x4f64a0]   ; -> phase += 2π·f/fs
+    ```
+    Bu **kesin olarak doğruluyor**: `frekans = seviye_değeri × 300 + 1500` (MSK: seviye=±1 →
+    1200/1800 Hz; 4L-FSK: seviye=±1,±⅓ → 1200/1400/1600/1800 Hz), ve modülasyon **gerçekten
+    sürekli-faz (continuous-phase, CPFSK)** — faz her örnekte biriktiriliyor, sembol sınırlarında
+    sıfırlanmıyor. Bu, MSK adının ("Minimum Shift Keying") beklediği tam davranış.
+    **Sonuç:** 4L-FSK'nin blok-bazlı ton-korelasyonuyla (Goertzel/DFT) güvenilir çözülememesinin
+    nedeni artık netleşti — bu yöntem ayrık/kesikli-faz FSK için uygundur, ama CPFSK için
+    sembol içi ton "sızıntısı" (200Hz aralık, ortogonal değil) yapısal bir sınırlama getiriyor.
+    MSK'de bu sorun olmuyor çünkü 600Hz aralığı simge periyodunda tam ortogonal. Doğru çözüm,
+    faz-türevi (frequency-discriminator) tabanlı, PLL/zamanlama-kurtarmalı bir demodülatör —
+    ki bunu zaten denedik ama ince ayarı (filtre bant genişliği, sembol-içi pencere) hâlâ
+    yetersiz. Alıcı tarafın (RX) tam eşik/filtre değerlerini bulmak için disassembly'e devam
+    edilebilir, ya da kendi PLL-tabanlı demodülatörümüzü bu doğrulanmış CPFSK modeliyle daha
+    dikkatli tasarlayabiliriz.
+
 0. ~~Frekans sabitleri~~ — `kgstv.exe`'de offset ~24296-24320 civarında **300.0, 1500.0, 200.0,
    1200.0** (float32) sabitleri art arda bulundu: merkez frekans (1500), MSK sapması (±300),
    4L-FSK adım genişliği (200Hz) — varsayılan frekans modelimizle **tam örtüşüyor**. 4L-FSK
