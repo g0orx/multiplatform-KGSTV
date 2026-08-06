@@ -245,11 +245,31 @@ decode etti:
   kaynaklanıyor. `sc` alanı sadece 4 bit (0-15) olduğu için IJG'nin 1-100 ölçeğiyle doğrudan
   eşleşmiyor; gerçek eşleme (`sc` → skala çarpanı) henüz belirlenmedi.
 
-**Sonuç:** JPEG codec'inin **yapısı** (Huffman tabloları, zigzag, DCT blok organizasyonu,
-4:2:0-eşdeğeri 4:1:1 chroma, DC prediction) kesinleşti. Kalan tek bilinmeyen: `sc` → kuantizasyon
-ölçek eşlemesi. Bunu netleştirmenin en hızlı yolu `kgstv.exe`'nin JPEG encode fonksiyonundaki
-sabit tabloyu/formülü okumak, ya da farklı `sc` değerleriyle (`.10_scale` vs `.50_scale`
-örnekleri) karşılaştırmalı deneme yapmak.
+### ✅ `sc` → Kuantizasyon Ölçeği — ÇÖZÜLDÜ (kgstv.exe binary analizi + gerçek piksel doğrulaması)
+
+`kgstv.exe` içinde standart JPEG Huffman tabloları (AC/DC luma/chroma) **birebir**, ve onlardan
+hemen önceki bellek bölgesinde **standart IJG kalite=50 taban kuantizasyon tabloları** (luma ve
+chroma, her ikisi de birebir) bulundu (`research/binaries/kgstv_extracted/kgstv/kgstv.exe`,
+offset ~907037 luma başlangıcı, ~907117 chroma başlangıcı — 4 bayt/değer, big-endian paketli).
+
+Gerçek `KG-STV_MSK_Norm.wav` kaydından decode edilen düz (AC katsayısız) bloklardan (`sc=10`,
+DC=-3→piksel 98.0, DC=-6→piksel 68.0) geriye doğru hesaplama: kullanılan `qt[0,0]=80`. Standart
+IJG formülüyle **quality=10** için: `scale=5000/10=500`, `qt[0,0]=floor((16×500+50)/100)=80` —
+**tam eşleşme**. Yani:
+
+> **`sc` alanı, IJG JPEG "quality" parametresinin (1–100 ölçeği) doğrudan kendisidir.**
+> Standart formül: `scale = quality<50 ? 5000/quality : 200-2*quality`;
+> `qval = clamp(floor((base_taban×scale+50)/100), 1, 255)`.
+
+AC katsayılı blokların ilk denemede 0–255 aralığı dışına taşması bir ölçek hatası değildi —
+sadece **IDCT çıkışının 0–255'e kırpılmasını (clamp) unutmuştuk**; bu her JPEG decoder'ında
+standart bir son adımdır. Kırpma eklendiğinde AC'li bloklar tutarlı, gerçekçi bir desen
+gösteriyor (örn. yatay bantlama — bir fotoğraftaki yatay kenar/gradyanla tam uyumlu).
+`research/decoder/jpeg_block.py` güncellendi.
+
+**Sonuç:** JPEG codec'inin **hem yapısı hem de kuantizasyon ölçeklendirmesi** artık tam olarak
+biliniyor. Görüntü katmanında kalan tek şey, üretim kalitesinde bir Rust implementasyonu yazmak
+— bilinmeyen bir parametre yok.
 
 ### Hâlâ Doğrulanması Gereken (görüntü modu için)
 
@@ -265,6 +285,11 @@ readme.txt bit-seviyesinde çerçeveyi tarif ediyor ama şunlar hâlâ açık de
 ya `kgstv.exe`'nin ilgili fonksiyonlarını disassemble etmemiz ya da gerçek bir off-air kayıt
 üzerinde bit-eşleştirme yapmamız gerekiyor:
 
+0. ~~Frekans sabitleri~~ — `kgstv.exe`'de offset ~24296-24320 civarında **300.0, 1500.0, 200.0,
+   1200.0** (float32) sabitleri art arda bulundu: merkez frekans (1500), MSK sapması (±300),
+   4L-FSK adım genişliği (200Hz) — varsayılan frekans modelimizle **tam örtüşüyor**. 4L-FSK
+   decode sorununun kaynağı yanlış nominal frekanslar değil; muhtemelen demod algoritmasının
+   kendisi (filtre/eşik) ya da whitening/bit-sıra detayı.
 1. **Bit sırası** — 54 bitlik header alanları ve 63/127 bitlik M-sequence dizileri MSB-first mi
    gönderiliyor, LSB-first mi?
 2. **Viterbi K=7 polinomları** — "NASA standart" dendiğine göre büyük ihtimalle CCSDS/NASA

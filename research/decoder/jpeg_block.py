@@ -214,7 +214,7 @@ def decode_16x16_block(bits, quality=10, verbose=False):
                 r,cc = divmod(ZIGZAG[i], 8)
                 block[r,cc] = c
             deq = block * qt
-            px = idct8(deq) + 128
+            px = np.clip(idct8(deq) + 128, 0, 255)
             results.append((comp, px))
             if verbose:
                 print(comp, "DC=", coeffs[0], "nonzero_ac=", sum(1 for c in coeffs[1:] if c))
