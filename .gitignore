@@ -4,3 +4,4 @@ research/binaries/kgstv_extracted/
 *.pyc
 __pycache__/
 target/
+.DS_Store
