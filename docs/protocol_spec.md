@@ -187,12 +187,18 @@ kanıtlıyor. `com=6` göstermesi, görüntü aktarımından önce vericinin ön
 duyurduğunu doğruluyor (readme3.txt'deki "çağrı işareti N kez tekrar gönderilsin" özelliğiyle
 tutarlı). `m=1` bu oturumda veri chunk'larının **4L-FSK** ile gönderildiğini gösteriyor.
 
-Bu 4L-FSK veri chunk'ının (çağrı işaretinin kendisi, 40 bit) çözümü ise **henüz güvenilir değil** —
-basit "ani frekans" (frequency-discriminator) yöntemi 4 seviyeli FSK için yeterince gürbüz değil;
-sembol başına 4 ton arasında ayrım net değil (~%15-20 sembol hatası gözlemlendi). Bunun için
-Rust implementasyonunda (ya da bir sonraki Python iterasyonunda) **ton-korelasyonu (Goertzel/FFT
-matched-filter) tabanlı bir 4-seviye demodülatör** gerekiyor — bu, gerçek 16×16 JPEG blok
-içeriğini görmek için son eksik parça.
+Bu 4L-FSK veri chunk'ının (çağrı işaretinin kendisi, 40 bit) çözümü ise **hâlâ açık** —
+hem ton-korelasyon hem ani-frekans (discriminator) yöntemleri denendi, **iki bağımsız
+kayıtta (`KG-STV_.10_scale`, `KG-STV_4LFSK_Norm`) tutarlı/tekrarlanabilir ama beklenen 4
+seviyeye net ayrılmayan** frekans okumaları elde edildi (6 çağrı-işareti tekrarı üzerinden
+ortalama alındı, gürültü değil — sistematik bir kalibrasyon/eşleme sorunu). Bilinen-düz-metin
+("TEST3", MSK modundan doğrulanmış) ile geriye doğru kalibrasyon denendi ama net bir eşleşme
+çıkmadı — **bu 4L-FSK kayıtlarındaki gerçek çağrı işareti "TEST3" olmayabilir**, yani varsayım
+geçersiz kalmış olabilir. Sonuç: MSK için demodülasyon tam kanıtlanmış ve üretim kalitesinde;
+**4L-FSK için ya gerçek düz-metin bilinmeli ya da `kgstv.exe`'nin demodülatör kodu (filtre/eşik
+sabitleri) incelenmeli**. Şimdilik açık bırakıldı (bkz. proje görev listesi #8) — MSK modu
+tek başına tam bir KG-STV implementasyonu için yeterli (encode taraf hem MSK hem 4L-FSK
+üretebilir; sadece 4L-FSK *decode* kalibrasyonu eksik).
 
 ### ✅ Tam Transmisyon Yürüyüşü (Frame Walking) — Gerçek Görüntü Blokları Çıkarıldı
 
