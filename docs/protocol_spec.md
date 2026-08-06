@@ -285,6 +285,28 @@ readme.txt bit-seviyesinde çerçeveyi tarif ediyor ama şunlar hâlâ açık de
 ya `kgstv.exe`'nin ilgili fonksiyonlarını disassemble etmemiz ya da gerçek bir off-air kayıt
 üzerinde bit-eşleştirme yapmamız gerekiyor:
 
+-2. **RX ön-uç filtre zinciri kgstv.exe disassembly ile bulundu ve doğrulandı** (waveIn
+    callback @0x4033e8, radare2 ile takip edildi). Gerçek DSP zinciri:
+    ```
+    int16 PCM (44100Hz) → FILTER1 (51-tap anti-alias lowpass) → 4'e decimate (→11025Hz)
+                        → FILTER2 (51-tap, ~900–2000Hz bandpass) → [devamı çıkarılmadı]
+    ```
+    Her iki filtrenin **tam katsayıları** binary'den okundu (dosya offset 841240 ve 841648,
+    51×8-byte double) ve `research/decoder/kgstv_filters.py`'ye kaydedildi. FILTER2'nin frekans
+    tepkisi hesaplandı: 0Hz'de -54dB (DC/hum reddi), 900-2000Hz'de düz (KG-STV ton bandı), 2500Hz
+    üstünde hızla düşüyor — **tam olarak** kanal-seçici bir bandpas filtre.
+
+    Bu gerçek filtre zinciri Python'da uygulanıp `.10_scale` örneğinde header tekrar decode
+    edildi: **CRC doğrulandı** (metric=4), sonuç önceki basit Butterworth yaklaşımıyla aynı.
+    4L-FSK çağrı işareti verisi de bu gerçek filtrelerle tekrar denendi — **çıkan seviye dizisi
+    önceki (basit filtre) sonucuyla neredeyse birebir aynı** (bkz. aşağıdaki tablo), bu da
+    demodülasyonumuzun **gürültüden değil, gerçek/tutarlı bir sinyalden** kaynaklandığını
+    kanıtlıyor. Ancak sonuç hâlâ okunabilir ASCII vermiyor.
+    **Sonuç:** Filtre kalitesi sorunun kaynağı değildi (zaten yeterince iyiydi). Kalan
+    açıklamalardan en olası olanı: **bu örneklerdeki gerçek test metni "TEST3" değil** —
+    bilinen-düz-metin varsayımımız bu spesifik kayıtlar için geçersiz. Gerçek metin bilinmeden
+    (ya da RX'in sembol-karar/senkron mantığının tam izlenmesiyle) kalibrasyon tamamlanamıyor.
+
 -1. **Modülatör formülü kgstv.exe disassembly ile bulundu** (radare2, fonksiyon @0x405f94,
     frekans sabitleri @0x4068e8 civarı). Gerçek x87 FPU kodu:
     ```
