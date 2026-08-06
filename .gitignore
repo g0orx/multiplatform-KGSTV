@@ -1,0 +1,5 @@
+research/venv/
+research/sampleaudio/wav/*.wav
+research/binaries/kgstv_extracted/
+*.pyc
+__pycache__/
