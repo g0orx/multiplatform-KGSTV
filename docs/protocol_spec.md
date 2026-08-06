@@ -221,6 +221,30 @@ bloğu (`com=1`)**, çoğu geçerli CRC ile. Bu şunu kesinleştiriyor:
 besleyip (varsayılan/standart tablolarla dene, tutmazsa `kgstv.exe`'den tabloları çıkar) piksel
 verisine çevirmek — bu, "resmin encode/decode" sorusunun son parçası.
 
+### ✅ JPEG Entropy Katmanı — Standart Tablolarla Doğrulandı
+
+`research/decoder/jpeg_block.py`, standart ITU T.81 Annex K Huffman tabloları (DC/AC,
+luma/chroma) ve standart zigzag sırasıyla, frame11'in CRC-doğrulanmış 186-bit ham blok verisini
+decode etti:
+
+- **Bit tüketimi tam olarak 186/186** — hiçbir Huffman senkron hatası, hiçbir EOF/format hatası
+  olmadan 6 blok (4×Y + 1×Cb + 1×Cr) baştan sona ayrıştırıldı. Yanlış bir tablo seti ile bunun
+  şansla olması istatistiksel olarak neredeyse imkânsız → **KG-STV'nin entropy-coding katmanı
+  standart JPEG Huffman tablolarıyla bit-uyumlu**.
+- İki düz Y bloğu (sadece DC, AC katsayısı yok) **tam olarak geçerli gri ton değerlerine**
+  (98.0 ve 68.0 — 0-255 aralığında) çözüldü. Cb/Cr blokları DC=0 → 128 (nötr renk).
+- İki blok AC katsayısı içeriyor (gerçek doku); bu bloklarda piksel değerleri 0-255 aralığının
+  dışına taşıyor — bu, Huffman/tablo hatası değil, **kuantizasyon tablosu ölçeklendirme
+  formülünün** (`sc` 4-bit alanı → IJG "quality 1-100" formülü) yanlış kalibre edilmiş olmasından
+  kaynaklanıyor. `sc` alanı sadece 4 bit (0-15) olduğu için IJG'nin 1-100 ölçeğiyle doğrudan
+  eşleşmiyor; gerçek eşleme (`sc` → skala çarpanı) henüz belirlenmedi.
+
+**Sonuç:** JPEG codec'inin **yapısı** (Huffman tabloları, zigzag, DCT blok organizasyonu,
+4:2:0-eşdeğeri 4:1:1 chroma, DC prediction) kesinleşti. Kalan tek bilinmeyen: `sc` → kuantizasyon
+ölçek eşlemesi. Bunu netleştirmenin en hızlı yolu `kgstv.exe`'nin JPEG encode fonksiyonundaki
+sabit tabloyu/formülü okumak, ya da farklı `sc` değerleriyle (`.10_scale` vs `.50_scale`
+örnekleri) karşılaştırmalı deneme yapmak.
+
 ### Hâlâ Doğrulanması Gereken (görüntü modu için)
 
 Yukarıdakiler **metin + NORM + MSK** kombinasyonu için kanıtlanmış. Görüntü modu için ek doğrulama
