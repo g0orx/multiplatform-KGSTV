@@ -388,13 +388,15 @@ impl KgstvApp {
     /// bir çizim üretir (gerçek kayıtla doğrulanan bir hataydı — bkz. `docs/protocol_spec.md`).
     /// Bu yüzden `last_anchor` bilinmeden (henüz decode tamamlanmadan) çizim yapılmaz.
     ///
-    /// Ayrıca: `ToneClock::soft_metric_at`'in ham (p1-p0)/(p1+p0) değeri, MSK'nin 600Hz ton
-    /// aralığının Hanning-pencereli DFT büyüklüğü (faz-uyumsuz/incoherent) bir korelatörle asla
-    /// ±1'e yaklaşmaması nedeniyle DOĞAL olarak mütevazı kalır (tipik ~0.05-0.3, tek bir tb'lik
-    /// pencerede iki komşu frekans arasında kalan sızıntı yüzünden) — bu bir hata değil, bu
-    /// basit/incoherent yöntemin matematiksel bir özelliği (sert bit kararı yine de güvenilir,
-    /// çünkü sadece işaret önemli). Göz açıklığını görsel olarak anlamlı kılmak için sabit bir
-    /// `EYE_DISPLAY_GAIN` ile ölçeklenip [-1,1]'e kırpılır.
+    /// **Sinyal seçimi:** `ToneClock::soft_metric_at`'in matched-filter korelasyonu (ilk
+    /// denenen yaklaşım) sembol içinde yumuşak/sinüsvari bir eğri üretiyordu — klasik osiloskop
+    /// göz diyagramının beklenen "düz plato + keskin geçiş" görünümü DEĞİL (kullanıcı geri
+    /// bildirimi ve bir referans görselle doğrulandı). Bunun yerine `kgstv_modem::
+    /// instantaneous_freq` (anlık frekans discriminator'ı) kullanılıyor — sembol içinde frekans
+    /// gerçekten düz kaldığından (CPFSK'nin doğası gereği) ve sadece sembol sınırlarında
+    /// değiştiğinden, bu tam olarak klasik göz diyagramı şeklini üretiyor. Frekans, `±300Hz`
+    /// (MSK'nin nominal sapması) ile [-1,1]'e normalize edilir — 4L-FSK'nin ara seviyeleri
+    /// (1400/1600Hz) de doğal olarak ±0.33'e denk gelir.
     fn recompute_eye_diagram(&mut self) {
         if self.last_eye_update.elapsed() < EYE_UPDATE_INTERVAL {
             return;
@@ -413,25 +415,22 @@ impl KgstvApp {
         }
         let start = n - take;
         let filtered = kgstv_modem::bandpass_filtfilt(&samples[start..], sr, 900.0, 2200.0);
-        let clk = kgstv_modem::ToneClock::new(&filtered, sr);
-        let tb = clk.tb();
+        let tb = sr / kgstv_modem::BAUD;
         if tb < 1.0 {
             self.eye_points.clear();
             return;
         }
-        const POINTS_PER_SYMBOL: usize = 24;
-        const EYE_DISPLAY_GAIN: f64 = 5.0;
-        let step = tb / POINTS_PER_SYMBOL as f64;
-        let mut points = Vec::new();
-        let mut t = tb;
-        let limit = filtered.len() as f64 - tb;
-        while t < limit {
-            let m = (clk.soft_metric_at(t, tb / 2.0) * EYE_DISPLAY_GAIN).clamp(-1.0, 1.0);
-            // Faz, GERÇEK senkron anchor'ına göre: (mutlak_örnek_konumu - anchor) / tb.
-            let abs_t = start as f64 + t;
+        const CENTER_FREQ: f64 = 1500.0;
+        const LP_CUTOFF: f64 = 500.0;
+        const DEVIATION: f64 = 300.0; // MSK'nin nominal sapması — normalizasyon ölçeği
+        let freq = kgstv_modem::instantaneous_freq(&filtered, sr, CENTER_FREQ, LP_CUTOFF);
+
+        let mut points = Vec::with_capacity(freq.len());
+        for (i, &f) in freq.iter().enumerate() {
+            let m = (((f - CENTER_FREQ) / DEVIATION) as f32).clamp(-1.3, 1.3);
+            let abs_t = start as f64 + i as f64;
             let phase = ((abs_t - anchor) / tb).rem_euclid(1.0) as f32;
-            points.push((phase, m as f32));
-            t += step;
+            points.push((phase, m));
         }
         self.eye_points = points;
     }
