@@ -973,10 +973,12 @@ impl eframe::App for KgstvApp {
             }
         }
 
-        egui::Panel::bottom("eye").resizable(true).default_size(180.0).show(ui, |ui| {
-            ui.heading("Göz Diyagramı (Eye Diagram) — MSK yumuşak karar metriği");
-            let (rect, _resp) =
-                ui.allocate_exact_size(egui::vec2(ui.available_width(), 130.0), egui::Sense::hover());
+        egui::Panel::bottom("eye").resizable(true).default_size(340.0).min_size(160.0).show(ui, |ui| {
+            ui.heading("Göz Diyagramı (Eye Diagram) — anlık frekans discriminator");
+            let (rect, _resp) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), ui.available_height()),
+                egui::Sense::hover(),
+            );
             paint_eye_diagram(ui, rect, &self.eye_points);
         });
 
