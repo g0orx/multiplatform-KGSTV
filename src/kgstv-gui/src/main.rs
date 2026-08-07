@@ -783,7 +783,13 @@ fn paint_eye_diagram(ui: &mut egui::Ui, rect: egui::Rect, points: &[(f32, f32)])
         return;
     }
 
-    let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(80, 220, 120, 110));
+    // DÜŞÜK alfa kritik: osiloskop "fosfor kalıcılığı" görünümü, YÜZLERCE üst üste binen ize
+    // dayanır — her iz görece SAYDAM olmalı ki yoğunluk kademeli birikip net bir gradyan
+    // oluştursun (sık üst üste binen düz platolar parlak/opak, seyrek geçiş/kesişim bölgeleri
+    // soluk kalsın). Yüksek bir alfa (ör. %43) birkaç izden sonra her yeri opak yeşile
+    // doyurup TÜM yoğunluk bilgisini (dolayısıyla kesişim noktalarını) yok ediyordu — kullanıcı
+    // geri bildirimiyle bulunan asıl sorun buydu.
+    let stroke = egui::Stroke::new(1.2, egui::Color32::from_rgba_unmultiplied(80, 220, 120, 20));
     let mut trace: Vec<egui::Pos2> = Vec::new();
     let mut last_phase = -1.0f32;
     for &(phase, m) in points {
@@ -1012,9 +1018,18 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default().with_inner_size([1100.0, 800.0]),
         ..Default::default()
     };
+    // İsteğe bağlı: `kgstv-gui <kayit.wav>` şeklinde çağrılırsa o dosyayı açılışta otomatik
+    // yükler (native dosya seçiciyle uğraşmadan hızlı test/betikleme için kullanışlı).
+    let cli_wav_path = std::env::args().nth(1).map(PathBuf::from);
     eframe::run_native(
         "KGSTV — Cross-Platform",
         options,
-        Box::new(|_cc| Ok(Box::new(KgstvApp::default()))),
+        Box::new(move |cc| {
+            let mut app = KgstvApp::default();
+            if let Some(path) = cli_wav_path {
+                app.open_file(&cc.egui_ctx, path);
+            }
+            Ok(Box::new(app))
+        }),
     )
 }
