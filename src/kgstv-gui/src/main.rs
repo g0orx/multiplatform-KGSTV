@@ -83,7 +83,11 @@ struct KgstvApp {
 
     // Göz diyagramı: en son yüklenen/yakalanan ses (dosyadan ya da canlı tampondan, ya da
     // TX'te üretilen ses), decode edilip edilmediğine bakılmaksızın periyodik yeniden çizilir.
+    // `last_anchor`: son decode'un bulduğu senkron konumu — göz diyagramının fazını gerçek
+    // sembol ızgarasına hizalamak için ŞART (bkz. `recompute_eye_diagram` dokümantasyonu;
+    // anchor'sız fold rastgele/anlamsız bir faza denk gelip düz/bilgisiz bir çizim üretiyordu).
     last_audio: Option<(f64, Arc<Vec<f64>>)>,
+    last_anchor: Option<f64>,
     eye_points: Vec<(f32, f32)>,
     last_eye_update: Instant,
 
@@ -131,6 +135,7 @@ impl Default for KgstvApp {
             live: None,
             last_live_decode: Instant::now(),
             last_audio: None,
+            last_anchor: None,
             eye_points: Vec::new(),
             last_eye_update: Instant::now(),
 
@@ -185,6 +190,7 @@ impl KgstvApp {
         self.reset_decode_state();
         self.decoding = true;
         self.live = None; // dosya modu canlı yakalamayı durdurur
+        self.last_anchor = None; // yeni dosya için eski anchor artık geçersiz
 
         let (tx, rx): (Sender<DecodeMsg>, Receiver<DecodeMsg>) = mpsc::channel();
         self.rx = Some(rx);
@@ -241,6 +247,7 @@ impl KgstvApp {
         let sample_rate = live.sample_rate;
         let samples = Arc::new(live.snapshot());
         self.last_audio = Some((sample_rate, samples.clone()));
+        self.last_anchor = None; // yeni anchor decode bitince gelecek — o ana kadar göz diyagramı boş kalır
 
         self.reset_decode_state();
         self.decoding = true;
@@ -252,12 +259,25 @@ impl KgstvApp {
         });
     }
 
+    /// Göz diyagramını yeniden hesaplar. **Kritik:** faz katlaması gerçek senkron `anchor`'ına
+    /// göre hizalanmalı — anchor bilinmeden `(t/tb)%1` gibi keyfi bir başlangıçtan katlamak,
+    /// göz diyagramının "orta noktada açık" yapısını rastgele bir faza kaydırıp düz/anlamsız
+    /// bir çizim üretir (gerçek kayıtla doğrulanan bir hataydı — bkz. `docs/protocol_spec.md`).
+    /// Bu yüzden `last_anchor` bilinmeden (henüz decode tamamlanmadan) çizim yapılmaz.
+    ///
+    /// Ayrıca: `ToneClock::soft_metric_at`'in ham (p1-p0)/(p1+p0) değeri, MSK'nin 600Hz ton
+    /// aralığının Hanning-pencereli DFT büyüklüğü (faz-uyumsuz/incoherent) bir korelatörle asla
+    /// ±1'e yaklaşmaması nedeniyle DOĞAL olarak mütevazı kalır (tipik ~0.05-0.3, tek bir tb'lik
+    /// pencerede iki komşu frekans arasında kalan sızıntı yüzünden) — bu bir hata değil, bu
+    /// basit/incoherent yöntemin matematiksel bir özelliği (sert bit kararı yine de güvenilir,
+    /// çünkü sadece işaret önemli). Göz açıklığını görsel olarak anlamlı kılmak için sabit bir
+    /// `EYE_DISPLAY_GAIN` ile ölçeklenip [-1,1]'e kırpılır.
     fn recompute_eye_diagram(&mut self) {
         if self.last_eye_update.elapsed() < EYE_UPDATE_INTERVAL {
             return;
         }
         self.last_eye_update = Instant::now();
-        let Some((sample_rate, samples)) = &self.last_audio else {
+        let (Some((sample_rate, samples)), Some(anchor)) = (&self.last_audio, self.last_anchor) else {
             self.eye_points.clear();
             return;
         };
@@ -277,13 +297,16 @@ impl KgstvApp {
             return;
         }
         const POINTS_PER_SYMBOL: usize = 24;
+        const EYE_DISPLAY_GAIN: f64 = 5.0;
         let step = tb / POINTS_PER_SYMBOL as f64;
         let mut points = Vec::new();
         let mut t = tb;
         let limit = filtered.len() as f64 - tb;
         while t < limit {
-            let m = clk.soft_metric_at(t);
-            let phase = ((t / tb) % 1.0) as f32;
+            let m = (clk.soft_metric_at(t, tb / 2.0) * EYE_DISPLAY_GAIN).clamp(-1.0, 1.0);
+            // Faz, GERÇEK senkron anchor'ına göre: (mutlak_örnek_konumu - anchor) / tb.
+            let abs_t = start as f64 + t;
+            let phase = ((abs_t - anchor) / tb).rem_euclid(1.0) as f32;
             points.push((phase, m as f32));
             t += step;
         }
@@ -435,6 +458,9 @@ impl KgstvApp {
                         samples.len()
                     );
                     self.last_audio = Some((sample_rate, samples.clone()));
+                    // Kendi ürettiğimiz TX sesi her zaman preamble'la örnek 0'da başlıyor
+                    // (bkz. encode_session_audio_cb) — anchor=0.0 tam olarak doğru.
+                    self.last_anchor = Some(0.0);
                     self.tx_audio = Some((sample_rate, samples));
                 }
                 TxMsg::PlaybackDone => {
@@ -501,6 +527,7 @@ impl KgstvApp {
                 }
                 DecodeMsg::Done { anchor } => {
                     self.decoding = false;
+                    self.last_anchor = Some(anchor);
                     self.status = format!(
                         "Tamamlandı — senkron anchor={anchor:.1} örnek, {} frame, tile: {}/{}",
                         self.frames_total, self.tiles_ok, self.tiles_total

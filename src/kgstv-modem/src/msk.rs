@@ -97,12 +97,18 @@ impl<'a> ToneClock<'a> {
 
     /// Herhangi bir kesirli örnek konumunda (sembol ızgarasına bağlı olmadan) yumuşak
     /// (soft) MSK karar metriği: `(p1-p0)/(p1+p0)`, yaklaşık [-1,1] aralığında — -1 saf
-    /// 1200Hz (bit 0), +1 saf 1800Hz (bit 1). `center`'ı ortalayan `tb` genişliğinde
+    /// 1200Hz (bit 0), +1 saf 1800Hz (bit 1). `center`'ı ortalayan `2×half_window` genişliğinde
     /// Hanning-pencereli bir pencere kullanır. `msk_bit`'in aksine sembol sınırlarına
     /// kilitlenmez; göz diyagramı (eye diagram) gibi zamanlama/gürültü görselleştirmeleri
     /// için tasarlandı.
-    pub fn soft_metric_at(&self, center: f64) -> f64 {
-        let half = self.tb / 2.0;
+    ///
+    /// `half_window`: pencere yarı-genişliği (örnek). Sert bit kararına en yakın (maksimum
+    /// SNR/eşleşmiş filtre) davranış için `tb/2` kullan — ama bu, sembolün neredeyse tamamında
+    /// pencereyi komşu sembole taşırıp metriği sıfıra yakın bastırır, göz diyagramını "düz"
+    /// gösterir. Klasik bir göz diyagramının beklenen "ortada açık, kenarlarda kapalı" görünümü
+    /// için `tb/6`–`tb/4` gibi daha DAR bir pencere kullanılmalı (bkz. `kgstv-gui`).
+    pub fn soft_metric_at(&self, center: f64, half_window: f64) -> f64 {
+        let half = half_window;
         let a = (center - half).round().max(0.0) as usize;
         let b = ((center + half).round().max(0.0) as usize).min(self.data.len()).max(a);
         if b <= a {
@@ -158,7 +164,7 @@ mod tests {
         let clk = ToneClock::new(&audio, sr);
         for (i, &bit) in bits.iter().enumerate() {
             let center = (i as f64 + 0.5) * clk.tb();
-            let m = clk.soft_metric_at(center);
+            let m = clk.soft_metric_at(center, clk.tb() / 2.0);
             // Komşu sembollerin farklı frekanslarından sızan enerji (CPFSK'nin sürekli-faz
             // doğası + tam sembole hizalanmamış merkezleme) genliği zayıflatabilir; işaret
             // (yön) yine de doğru olmalı — bu, sert `msk_bit` kararının aksine sürekli bir
