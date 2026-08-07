@@ -41,8 +41,15 @@ const LIVE_REDECODE_INTERVAL: Duration = Duration::from_millis(2000);
 const WAV_SIM_REDECODE_INTERVAL: Duration = Duration::from_millis(700);
 /// Göz diyagramının yeniden hesaplanma aralığı (her UI karesinde değil).
 const EYE_UPDATE_INTERVAL: Duration = Duration::from_millis(300);
-/// Göz diyagramı için kullanılan ses penceresi (son N saniye).
-const EYE_WINDOW_SECONDS: f64 = 1.5;
+/// Göz diyagramı için kullanılan ses penceresi (son N saniye). Faz katlaması, TEK bir
+/// (dosyanın başına yakın bulunan) `anchor`'a ve NOMİNAL sembol süresine (`sr/1200`, kayıt
+/// boyunca sabit varsayılır) dayanıyor — gerçek off-air kayıtlarda verici ile kayıt cihazının
+/// örnekleme saatleri arasındaki (küçük ama gerçek) fark, pencere ne kadar uzunsa o kadar
+/// biriken bir faz kaymasına yol açıyor (temiz/sentetik OH2UDS test sinyallerinde bu sorun
+/// yok — kullanıcı geri bildirimiyle doğrulandı: "havadan kaydettiğim seslerin ... üst üste
+/// iki kat gibi"). Pencereyi kısa tutmak bu birikimi sınırlı tutuyor; tam düzeltme için yerel/
+/// uyarlanır saat kurtarma (drift telafisi) gerekir — kapsam dışı bırakıldı.
+const EYE_WINDOW_SECONDS: f64 = 0.4;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Mode {
