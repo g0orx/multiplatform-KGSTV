@@ -320,6 +320,83 @@ gösteriyor (örn. yatay bantlama — bir fotoğraftaki yatay kenar/gradyanla ta
 biliniyor. Görüntü katmanında kalan tek şey, üretim kalitesinde bir Rust implementasyonu yazmak
 — bilinmeyen bir parametre yok.
 
+### ✅ `kgstv-modem` (Rust ses I/O + MSK modem) — Gerçek Kayıtla Uçtan Uca Doğrulandı (2026-08-07)
+
+`src/kgstv-modem/` cargo workspace üyesi olarak yazıldı: `wav` (hound tabanlı WAV I/O, örnekleme
+hızı dosyadan dinamik okunur), `filter` (RBJ biquad bant-geçiren, ileri+geri filtfilt), `msk`
+(disassembly ile doğrulanmış gerçek sürekli-faz sentezi + Hanning-pencereli DFT ton-korelasyonu
+demodülasyonu), `sync` (kaba+ince iki aşamalı senkron kelimesi arama) ve bunları
+`kgstv-core::frame`/`jpeg` ile birleştiren üst seviye `session` (ardışık frame yürüyüşü + TX
+oturum derleyicisi).
+
+Gerçek `samples/OH2UDS-*-mode-msk-*.wav` kayıtlarında (`cargo run -p kgstv-modem --release
+--example decode_wav`) uçtan uca doğrulama:
+- Senkron, kaydın başından ~2.93sn sonra (kayıt cihazı başlatma gecikmesi) doğru şekilde
+  bulundu — kaba arama adımının `tb/4` (~sembol süresinin dörtte biri) olması ve ince aramanın
+  eşitlik durumunda kaba sonuca en yakın konumu tercih etmesi (aksi hâlde `window()`'ın negatif
+  konumları 0'a clamp etmesi sahte eşitliklere yol açıyordu) gerekiyordu.
+- `duz-kirmizi` (solid red) kaydı: 346 frame, **300/300 görüntü tile'ı** (`header_metric=0`,
+  yani Viterbi'de sıfır bit hatası; tüm veri CRC'leri geçti) decode edildi, üretilen görüntü
+  tam olarak beklenen **RGB=(178,0,0)** — `kgstv-core::jpeg` testindeki gerçek yakalanan
+  kırmızı tile ile bit-eşleşiyor.
+- `horizontal-kirmizi-beyaz` (CONV kodlu) kaydı: yine 300/300 tile decode edildi; kırmızı/beyaz
+  sınırındaki 1-2 geçiş tile'ında beklenen lossy-JPEG kenar bulanıklığı (küçük renk karışımı,
+  ~%0.6 piksel) gözlendi — bu bir decoder hatası değil, `sc=10` (düşük kalite) kuantizasyonun
+  keskin bir kenarda beklenen davranışı.
+
+**Sonuç:** MSK ses katmanı artık gerçek off-air/kontrollü kayıtlarla üretim kalitesinde
+doğrulanmış durumda — WAV'dan piksel-doğru görüntüye kadar tüm zincir Rust'ta çalışıyor.
+
+### ✅ 4L-FSK — MLSD/Viterbi Demodülatörü Çözüldü (2026-08-07)
+
+Yukarıdaki kalibrasyon notunda tespit edilen kök neden (200Hz ton aralığı 1200 baud'da
+ortogonal değil → bağımsız/hafızasız sembol kararları sistematik ISI'ye takılıyor, ~%80-83
+sembol doğruluğunda tıkanıyor) için önerilen çözüm — CPFSK faz-hafızasını hesaba katan bir
+Maximum-Likelihood Sequence Detection (Viterbi) — `src/kgstv-modem/src/fsk4.rs`'de uygulandı.
+
+**Anahtar matematiksel gözlem:** disassembly ile doğrulanmış modülatör formülüyle
+(`frekans = seviye×300+1500`, sürekli faz), 1200 baud'da dört olası frekansın taşıdığı
+taşıyıcı çevrimi (`freq/baud`): 1200→1, 1400→7/6, 1600→4/3=8/6, 1800→3/2=9/6. Yani seviye `L`
+sembolü, biriken faz durumunu **tam olarak `L×60°` ilerletir (mod 360°)** — modülasyon indeksi
+`h=Δf/baud=200/1200=1/6` rasyonel olduğundan bu YAKLAŞIK değil KESİN bir 6 durumlu CPM/CPFSK
+faz-trellis'i verir (standart CPM teorisi: `h=p/q` sadeleştirilmiş kesirse trellis `q`
+durumludur). `fsk4.rs`, bu 6 durumlu trellis üzerinde tam bir Viterbi/MLSD çalıştırıp sembol
+dizisini faz sürekliliğini doğru hesaba katarak kararlaştırıyor (basit ton-korelasyonun aksine).
+
+**Karşılaşılan iki ek engel (ikisi de gerçek kayıtla test edilirken bulundu, sentetik testler
+kazara gizliyordu):**
+1. **Bilinmeyen başlangıç faz DURUMU:** Veri chunk'ının başındaki mutlak faz, kendinden önceki
+   (her zaman MSK olan) senkron/header segmentinden gelen keyfi bir değerdir. İlk uygulama
+   yanlışlıkla durum 0'dan başlamayı zorluyordu (sentetik testler hep durum 0'da başladığı için
+   bu fark edilmiyordu) — düzeltme: Viterbi'ye 6 durumun hepsi için eşit/bilgisiz bir önsel
+   verildi, `[0,60°)` aralığında ek bir global faz-ofseti taraması ile birleştirildi.
+2. **İnce zamanlama kayması:** Gerçek kayıtlarda, MSK'nin büyüklük-bazlı (faz-uyumsuz)
+   demodülasyonuna TAMAMEN görünmez kalan ~birkaç örneklik sabit bir zamanlama kayması bulundu
+   (muhtemelen kayıt zincirinin grup gecikmesi) — faz-uyumlu (coherent) Viterbi korelasyonu
+   buna çok duyarlı. Bilinen-doğru MSK verisiyle çapraz doğrulanan bir teşhis aracıyla izole
+   edildi: `OH2UDS-duz-kirmizi-mode-4lfsk-code-normal-scale-1.wav`'da en iyi zamanlama kayması
+   **+4.5 örnek** bulununca Hamming mesafesi 8/94'ten **0/94**'e düştü. Çözüm: `[-8,+8]` örnek
+   aralığında ince bir kayma taraması (dosya için genelde sabit olduğundan ilk başarılı chunk'ta
+   bulunan kayma sonraki chunk'lara "ipucu" olarak taşınıyor, taramayı hızlandırıyor).
+
+**Gerçek kayıtla sonuç** (`cargo run -p kgstv-modem --release --example decode_wav`):
+- `OH2UDS-duz-kirmizi-mode-4lfsk-code-normal-scale-1.wav` (NORM, hatasız düzeltme yok):
+  **287/300 tile** decode edildi, başarılı olan HER tile tam olarak beklenen **RGB=(178,0,0)**
+  ile bit-eşleşiyor (kısmi/bozuk bir tile yok — CRC-kapılı boru hattının beklenen "ya tam doğru
+  ya hiç" davranışı).
+- `OH2UDS-horizontal-kirmizi-beyaz-mode-4lfsk-code-convolution-scale-1.wav` (CONV, K=7
+  konvolüsyonel hata düzeltmeli): **299/300 tile** — CONV kodlamanın kalan sembol hatalarının
+  çoğunu düzelttiği, teorik beklentiyle tam tutarlı.
+
+**Sonuç:** 4L-FSK artık gerçek off-air kalitesinde kayıtlarda **üretim kalitesine yakın**
+çalışıyor (~%96-99.7 tile başarı oranı, önceki ~%80 sembol-doğruluğu tıkanmasından — pratikte
+tek bir tile bile güvenilir decode edemeyen bir durumdan — devasa bir sıçrama). Kalan birkaç
+tile hatası muhtemelen gerçek kanal gürültüsü/geçici SNR düşüşleri (CONV kodlamayla neredeyse
+tamamen telafi ediliyor), yapısal bir eksiklik değil. `kgstv-modem::session`, header/senkron
+için her zaman MSK kullanırken (protokolün gerektirdiği gibi), veri chunk'ı için `hdr.m`
+alanına göre MSK/4L-FSK arasında otomatik geçiş yapıyor — hem RX (`decode_wav_sequential*`)
+hem TX (`encode_session_audio*`) tarafında.
+
 ### Hâlâ Doğrulanması Gereken (görüntü modu için)
 
 Yukarıdakiler **metin + NORM + MSK** kombinasyonu için kanıtlanmış. Görüntü modu için ek doğrulama

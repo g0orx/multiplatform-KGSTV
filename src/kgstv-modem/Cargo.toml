@@ -1,0 +1,11 @@
+[package]
+name = "kgstv-modem"
+version = "0.1.0"
+edition = "2021"
+description = "KG-STV için ses I/O + MSK modülatör/demodülatör (kgstv-core üzerine inşa edilmiştir)."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+kgstv-core = { path = "../kgstv-core" }
+hound = "3.5"
+cpal = "0.18.1"
