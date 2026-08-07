@@ -40,6 +40,32 @@ impl Biquad {
         }
     }
 
+    /// Alçak geçiren filtre (RBJ cookbook), kesim frekansı `fc` (Hz), kalite `q`
+    /// (0.707 ≈ Butterworth, maksimum düz geçiş bandı — basamak/kademe halinde kullanılınca
+    /// keskin bir kesim için tercih edilir).
+    fn lowpass(sample_rate: f64, fc: f64, q: f64) -> Self {
+        let w0 = 2.0 * PI * fc / sample_rate;
+        let alpha = w0.sin() / (2.0 * q);
+        let cos_w0 = w0.cos();
+        let b1 = 1.0 - cos_w0;
+        let b0 = b1 / 2.0;
+        let b2 = b0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_w0;
+        let a2 = 1.0 - alpha;
+        Biquad {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
+        }
+    }
+
     fn process(&mut self, x0: f64) -> f64 {
         let y0 =
             self.b0 * x0 + self.b1 * self.x1 + self.b2 * self.x2 - self.a1 * self.y1 - self.a2 * self.y2;
@@ -67,6 +93,24 @@ pub fn bandpass_filtfilt(samples: &[f64], sample_rate: f64, lo: f64, hi: f64) ->
     out
 }
 
+/// `cutoff` Hz'in altını geçiren, ileri+geri (filtfilt, sıfır-faz) filtrelenmiş sinyal — FM/FSK
+/// discriminator'ının baseband I/Q bileşenlerini süzmek için (bkz. `msk::instantaneous_freq`).
+/// İki kademeli biquad kaskadı kullanır (tek kademeye göre daha keskin kesim — komşu sembollerin
+/// sızıntısını bastırmak, yalnızca sembol içi frekans içeriğini geçirmek için önemli).
+pub fn lowpass_filtfilt(samples: &[f64], sample_rate: f64, cutoff: f64) -> Vec<f64> {
+    let q = std::f64::consts::FRAC_1_SQRT_2; // Butterworth (maksimum düz geçiş bandı)
+    fn run_stage(x: &[f64], sample_rate: f64, cutoff: f64, q: f64) -> Vec<f64> {
+        let mut f1 = Biquad::lowpass(sample_rate, cutoff, q);
+        let mut f2 = Biquad::lowpass(sample_rate, cutoff, q);
+        x.iter().map(|&v| f2.process(f1.process(v))).collect()
+    }
+    let mut fwd = run_stage(samples, sample_rate, cutoff, q);
+    fwd.reverse();
+    let mut out = run_stage(&fwd, sample_rate, cutoff, q);
+    out.reverse();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +132,23 @@ mod tests {
             &v[500..v.len() - 500]
         }
         assert!(rms(mid(&f_in)) > 5.0 * rms(mid(&f_out)));
+    }
+
+    #[test]
+    fn lowpass_passes_low_tone_attenuates_high_tone() {
+        let sr = 8000.0;
+        let n = 4000;
+        let t: Vec<f64> = (0..n).map(|i| i as f64 / sr).collect();
+        let low: Vec<f64> = t.iter().map(|&t| (2.0 * PI * 100.0 * t).sin()).collect();
+        let high: Vec<f64> = t.iter().map(|&t| (2.0 * PI * 2000.0 * t).sin()).collect();
+
+        let f_low = lowpass_filtfilt(&low, sr, 500.0);
+        let f_high = lowpass_filtfilt(&high, sr, 500.0);
+
+        let rms = |v: &[f64]| (v.iter().map(|x| x * x).sum::<f64>() / v.len() as f64).sqrt();
+        fn mid(v: &[f64]) -> &[f64] {
+            &v[500..v.len() - 500]
+        }
+        assert!(rms(mid(&f_low)) > 5.0 * rms(mid(&f_high)));
     }
 }
