@@ -5,9 +5,9 @@
 //! doğrulanmış hâliyle yeniden üreten çekirdek kütüphane. Bkz. `docs/protocol_spec.md`.
 //!
 //! Kapsam (bu sürümde): framing (preamble/sync), rate-1/2 K=7 konvolüsyonel kod, 127-bit
-//! whitening, CRC-16/AUG-CCITT, 54-bit bilgi chunk'ı (header) — hepsi MSK modu için gerçek
-//! kayıtla doğrulandı. 4L-FSK demodülasyonu ve JPEG kuantizasyon ölçeği henüz eksik/açık
-//! (bkz. protocol_spec.md, "Hâlâ Belirsiz" bölümleri).
+//! whitening, CRC-16/AUG-CCITT, 54-bit bilgi chunk'ı (header), ve 16×16 JPEG-uyumlu görüntü
+//! blok codec'i (encode+decode) — hepsi MSK modu için gerçek kayıtla doğrulandı. 4L-FSK
+//! demodülasyonu hâlâ açık (bkz. protocol_spec.md, "Hâlâ Belirsiz" bölümleri).
 
 pub mod constants;
 pub mod crc;
@@ -15,6 +15,9 @@ pub mod conv;
 pub mod whiten;
 pub mod header;
 pub mod frame;
+pub mod jpeg_tables;
+pub mod jpeg;
 
 pub use constants::{Command, CodingMode, Modulation};
 pub use header::InfoChunk;
+pub use jpeg::{decode_tile, encode_tile, rgb_to_tile, tile_to_rgb, Tile};
