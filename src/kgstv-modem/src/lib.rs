@@ -12,6 +12,7 @@
 pub mod wav;
 pub mod filter;
 pub mod msk;
+pub mod fsk4;
 pub mod sync;
 pub mod session;
 pub mod live;
@@ -19,6 +20,7 @@ pub mod live;
 pub use wav::{load_mono, save_mono, AudioBuffer};
 pub use filter::bandpass_filtfilt;
 pub use msk::{modulate_msk, ToneClock, BAUD, MSK_FREQS};
+pub use fsk4::{bits_to_levels, levels_to_bits, modulate_fsk4, Fsk4Detector};
 pub use sync::{find_sync, sync_err, SYNC_LEN};
 pub use session::{
     decode_wav_sequential, decode_wav_sequential_cb, encode_session_audio, encode_session_audio_cb,

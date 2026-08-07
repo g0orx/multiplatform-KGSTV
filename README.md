@@ -21,10 +21,9 @@ mühendislikle **doğrulandı**. Ayrıntılar: [`docs/protocol_spec.md`](docs/pr
 | JPEG kuantizasyon ölçeği (`sc`→scale) | ✅ Çözüldü — `sc` doğrudan IJG quality (1-100) |
 | JPEG blok içi DC kodlama | ✅ Kritik hata bulundu ve düzeltildi (6 blok birbirine zincirlenmez) |
 | **Rust JPEG codec** (`kgstv-core::jpeg`) | ✅ Encode+decode, gerçek kayıt verisiyle doğrulandı |
-| 4L-FSK demodülasyon kalibrasyonu | ⚠️ Kısmi (~%80-83 sembol doğruluğu, yetersiz) |
 | **Rust ses I/O + MSK modülatör/demodülatör** (`kgstv-modem`) | ✅ Uçtan uca doğrulandı: gerçek OH2UDS MSK kaydında 300/300 tile, sıfır bit hatasıyla decode edildi |
-| **Masaüstü GUI** (`kgstv-gui`, egui/eframe) | ✅ Win/Linux/macOS tek kod tabanı — **RX**: WAV aç, ilerlemeli tile çizimi, frame günlüğü, canlı (mikrofon) decode, göz diyagramı; **TX**: resim/metin gönder, WAV kaydet veya hoparlörden çal |
-| 4L-FSK ses katmanı + platform UI'ında 4L-FSK desteği | ⏳ Henüz başlanmadı |
+| **4L-FSK MLSD/Viterbi demodülatörü** (`kgstv-modem::fsk4`) | ✅ Çözüldü — 6 durumlu CPM faz-trellis Viterbi + ince zamanlama kayması taraması; gerçek kayıtta %96-99.7 tile başarı oranı (önceki ~%80 sembol-doğruluğu tıkanmasından büyük sıçrama) |
+| **Masaüstü GUI** (`kgstv-gui`, egui/eframe) | ✅ Win/Linux/macOS tek kod tabanı — **RX**: WAV aç, ilerlemeli tile çizimi, frame günlüğü, canlı (mikrofon) decode, göz diyagramı, MSK+4L-FSK otomatik; **TX**: resim/metin gönder (MSK ya da 4L-FSK), WAV kaydet veya hoparlörden çal |
 | iOS/Android UI | ⏳ Henüz başlanmadı |
 
 ## Dizin Yapısı
@@ -48,16 +47,18 @@ mühendislikle **doğrulandı**. Ayrıntılar: [`docs/protocol_spec.md`](docs/pr
   protokol implementasyonu: framing, konvolüsyonel kod, whitening, CRC, header, **JPEG codec**
 - `src/kgstv-modem/` — Rust ses katmanı (cargo workspace üyesi, `kgstv-core` üzerine inşa
   edilir): WAV I/O (`wav`), bant-geçiren ön-filtre (`filter`), gerçek sürekli-faz MSK
-  modülasyon/demodülasyon + ton-korelasyonu bit algılama (`msk`), senkron kelimesi arama
-  (`sync`), üst seviye TX/RX oturum API'si (`session`, ilerleme callback'li encode dahil),
-  varsayılan mikrofon/soundcard'dan sürekli örnek yakalama + hoparlörden çalma (`live`, `cpal`
-  üzerinden). `examples/decode_wav.rs`: bir WAV dosyasını uçtan uca decode edip PPM görüntü
-  üreten CLI aracı.
+  modülasyon/demodülasyon + ton-korelasyonu bit algılama (`msk`), **4L-FSK MLSD/Viterbi
+  modülasyon/demodülasyon** (`fsk4` — 6 durumlu CPM faz-trellis), senkron kelimesi arama
+  (`sync`), üst seviye TX/RX oturum API'si (`session`, header/senkron her zaman MSK + veri
+  chunk'ı `hdr.m`'ye göre MSK/4L-FSK otomatik, ilerleme callback'li encode dahil), varsayılan
+  mikrofon/soundcard'dan sürekli örnek yakalama + hoparlörden çalma (`live`, `cpal` üzerinden).
+  `examples/decode_wav.rs`: bir WAV dosyasını uçtan uca decode edip PPM görüntü üreten CLI aracı.
 - `src/kgstv-gui/` — masaüstü GUI (cargo workspace üyesi, egui/eframe), RX ve TX modları:
   **RX** — WAV dosyası aç (native dosya seçici, `rfd`) ya da canlı (mikrofon) decode başlat,
-  arka planda `kgstv-modem` ile decode et, tile'ları geldikçe canlı çiz, frame günlüğünü göster;
-  **TX** — bir resim dosyası (`image` crate ile PNG/JPEG/GIF/BMP) 320×240'a ölçekleyip 300 tile
-  JPEG'e + isteğe bağlı çağrı işareti/metine encode eder, WAV olarak kaydeder ya da doğrudan
+  arka planda `kgstv-modem` ile decode et (MSK/4L-FSK otomatik ayırt edilir), tile'ları geldikçe
+  canlı çiz, frame günlüğünü göster; **TX** — bir resim dosyası (`image` crate ile
+  PNG/JPEG/GIF/BMP) 320×240'a ölçekleyip 300 tile JPEG'e + isteğe bağlı çağrı işareti/metine
+  encode eder (MSK ya da 4L-FSK modülasyonu seçilebilir), WAV olarak kaydeder ya da doğrudan
   hoparlörden çalar. Her iki modda sinyal kalitesi/zamanlamasını değerlendirmek için göz
   diyagramı (eye diagram) gösterilir. Windows/Linux/macOS için tek kod tabanı.
 
@@ -81,12 +82,11 @@ python3 decoder/decode_session.py ../samples/<kayit>.wav ../samples/decoded/<cik
 ## Sonraki Adımlar
 
 Bkz. proje görev listesi ve `docs/protocol_spec.md`'nin ilgili bölümleri:
-1. 4L-FSK için MLSD/Viterbi-tabanlı CPFSK demodülatörü (basit sembol-bazlı algılama
-   yapısal olarak yetersiz kaldı — ton aralığı ortogonal değil) — `kgstv-modem` MSK için hazır,
-   4L-FSK aynı ses katmanına eklenecek
-2. `kgstv-modem::session`'daki ardışık (sıralı) frame yürüyüşünü, gürültülü gerçek off-air
+1. `kgstv-modem::session`'daki ardışık (sıralı) frame yürüyüşünü, gürültülü gerçek off-air
    kayıtlar için `decode_session.py`'deki bağımsız-aday-tarama yaklaşımına taşı (uzun/gürültülü
    kayıtlarda senkron kaybında sıralı yürüyüş durur)
-3. `kgstv-gui`'ye 4L-FSK seçeneği eklemek (hem RX hem TX)
-4. iOS/Android UI (egui zaten Android/iOS derlemesini destekliyor — masaüstü kod tabanı taşınabilir
+2. 4L-FSK'nin kalan birkaç tile hatası (287-299/300, muhtemelen gerçek kanal gürültüsü) için
+   daha geniş/ince faz+zamanlama taraması ya da yumuşak-karar (soft-decision) CRC/CONV
+   birleşimi denenebilir — kısmi iyileştirme, blokaj değil
+3. iOS/Android UI (egui zaten Android/iOS derlemesini destekliyor — masaüstü kod tabanı taşınabilir
    olmalı; platform-özel ses I/O entegrasyonu ayrıca gerekir)

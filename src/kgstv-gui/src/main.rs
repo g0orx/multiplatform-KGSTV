@@ -97,6 +97,7 @@ struct KgstvApp {
     tx_message: String,
     tx_quality: u8,
     tx_conv: bool,
+    tx_fsk4: bool,
     tx_encoding: bool,
     tx_progress: (usize, usize),
     tx_status: String,
@@ -151,6 +152,7 @@ impl Default for KgstvApp {
             tx_message: String::new(),
             tx_quality: 10,
             tx_conv: false,
+            tx_fsk4: false,
             tx_encoding: false,
             tx_progress: (0, 0),
             tx_status: "Bir resim seçin.".to_string(),
@@ -318,6 +320,8 @@ impl KgstvApp {
         let message = self.tx_message.clone();
         let quality = self.tx_quality.clamp(1, 15);
         let conv = self.tx_conv;
+        let fsk4 = self.tx_fsk4;
+        let modulation = fsk4 as u8;
 
         let (tx, rx) = mpsc::channel();
         self.tx_rx = Some(rx);
@@ -345,7 +349,7 @@ impl KgstvApp {
                     sys: 0,
                     com: Command::Text as u8,
                     c: conv as u8,
-                    m: 0,
+                    m: modulation,
                     x: 0,
                     y: 0,
                     sc: quality,
@@ -363,7 +367,7 @@ impl KgstvApp {
                         sys: 0,
                         com: Command::Image as u8,
                         c: conv as u8,
-                        m: 0,
+                        m: modulation,
                         x: tx_ as u8,
                         y: ty as u8,
                         sc: quality,
@@ -462,8 +466,9 @@ impl KgstvApp {
                     self.frames_total += 1;
                     let hdr = &fr.header;
                     let cmd = Command::from_u8(hdr.com);
+                    let modulation = if hdr.m == 1 { "4LFSK" } else { "MSK" };
                     self.log_lines.push(format!(
-                        "#{:04} {:?} x={:>2} y={:>2} sc={:>2} size={:>4} crc_ok={} viterbi_err={}",
+                        "#{:04} {:?} x={:>2} y={:>2} sc={:>2} size={:>4} {modulation:<5} crc_ok={} viterbi_err={}",
                         self.frames_total, cmd, hdr.x, hdr.y, hdr.sc, hdr.size, fr.data_crc_ok, fr.header_metric
                     ));
                     if self.log_lines.len() > MAX_LOG_LINES {
@@ -768,6 +773,7 @@ impl eframe::App for KgstvApp {
                     ui.add_space(8.0);
                     ui.add(egui::Slider::new(&mut self.tx_quality, 1..=15).text("JPEG kalite (sc)"));
                     ui.checkbox(&mut self.tx_conv, "Konvolüsyonel kodlama (CONV)");
+                    ui.checkbox(&mut self.tx_fsk4, "4L-FSK modülasyonu (metin+görüntü için — çağrı işareti hep MSK)");
                     ui.add_space(8.0);
                     let (done, total) = self.tx_progress;
                     if total > 0 {
