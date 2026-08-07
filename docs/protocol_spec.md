@@ -187,6 +187,33 @@ kanıtlıyor. `com=6` göstermesi, görüntü aktarımından önce vericinin ön
 duyurduğunu doğruluyor (readme3.txt'deki "çağrı işareti N kez tekrar gönderilsin" özelliğiyle
 tutarlı). `m=1` bu oturumda veri chunk'larının **4L-FSK** ile gönderildiğini gösteriyor.
 
+### 2026-08-07 Güncellemesi: Bilinen-Düz-Metinle Kalibrasyon — Kısmi Başarı
+
+Kullanıcının sağladığı kontrollü test görüntüleri (OH2UDS çağrı işareti, düz renk + çizgili,
+hem MSK hem 4L-FSK, hem NORM hem CONV) sayesinde artık **gerçek bilinen düz-metin** ("OH2UDS")
+ile kalibrasyon mümkün oldu — 5 farklı dosyadan (aynı çağrı işareti tekrarı) toplam 30 ölçüm
+toplanıp `docs/protocol_spec.md` bu bölümündeki eski "TEST3 varsayımı geçersiz" bulmacası
+çözüldü:
+
+- **İşaret (pozitif/negatif) doğruluğu: %96 (23/24 sembol)** — kesin bir ilerleme
+- Bilinen etiketlerle küme merkezleri kalibre edildi: **[-230.5, -74.6, 93.6, 210.6] Hz**
+  (ideal ±100/±300 Hz'den belirgin şekilde sıkışık — muhtemelen gerçek/sentetik kayıt zincirinin
+  kendi frekans tepkisi)
+- Sembol doğruluğu **~%80-83**'e ulaştı — hem frekans-discriminator hem ton-korelasyon
+  yöntemiyle, **30 tekrar üzerinden ortalama almak bile sonucu değiştirmiyor** → kalan hatalar
+  gürültü değil, **sistematik/deterministik bir blok-arası girişim (ISI)**
+- **Pratik sınama:** düz beyaz görüntünün en küçük bloğunu (72 bit, 36 sembol) bu kalibre
+  merkezlerle decode etmeyi denedim — %80 sembol doğruluğu JPEG Huffman'ın sıfır hata
+  toleransı karşısında **yetersiz kaldı**, decode birkaç blok sonra bozuldu.
+
+**Kök neden (disassembly bulgusuyla tutarlı):** 4L-FSK'nin 200Hz ton aralığı 1200 baud sembol
+periyodunda tam ortogonal değil (MSK'nin 600Hz aralığının aksine) → basit sembol-bazlı (blok
+ortalaması ya da ton-korelasyonu) algılama yapısal olarak yetersiz kalıyor. **Sonraki adım:**
+gerçek CPFSK faz hafızasını hesaba katan bir **Maximum-Likelihood Sequence Detection (Viterbi
+tabanlı CPFSK demodülatörü)** — ayrı, iyi tanımlanmış bir mühendislik projesi.
+
+Eski, artık kısmen aşılmış not (tarihsel referans için bırakıldı):
+
 Bu 4L-FSK veri chunk'ının (çağrı işaretinin kendisi, 40 bit) çözümü ise **hâlâ açık** —
 hem ton-korelasyon hem ani-frekans (discriminator) yöntemleri denendi, **iki bağımsız
 kayıtta (`KG-STV_.10_scale`, `KG-STV_4LFSK_Norm`) tutarlı/tekrarlanabilir ama beklenen 4
