@@ -89,6 +89,13 @@ struct KgstvApp {
     // gelen sesi göstermesi için).
     wav_sim: Option<kgstv_modem::PlaybackSim>,
     last_wav_sim_decode: Instant,
+    /// Şu ana kadar UI'a uygulanmış (log'a eklenmiş/tile'ı çizilmiş) frame sayısı — bir sonraki
+    /// pas'ın hangi frame'leri sessizce atlayıp SADECE yenilerini uygulayacağını belirler
+    /// (bkz. `maybe_kick_wav_sim_decode`).
+    wav_sim_frames_applied: usize,
+    /// Oynatma tamamen bitince yapılan son (bütün veriyi güvenlik payı olmadan kapsayan)
+    /// decode pas'ından sonra `true` — artık her 700ms'de bir yeniden decode denemesini durdurur.
+    wav_sim_final_pass_done: bool,
 
     // Göz diyagramı: en son yüklenen/yakalanan ses (dosyadan ya da canlı tampondan, ya da
     // TX'te üretilen ses), decode edilip edilmediğine bakılmaksızın periyodik yeniden çizilir.
@@ -145,6 +152,8 @@ impl Default for KgstvApp {
             last_live_decode: Instant::now(),
             wav_sim: None,
             last_wav_sim_decode: Instant::now(),
+            wav_sim_frames_applied: 0,
+            wav_sim_final_pass_done: false,
             last_audio: None,
             last_anchor: None,
             eye_points: Vec::new(),
@@ -219,7 +228,7 @@ impl KgstvApp {
             };
             let samples = Arc::new(audio.samples);
             let _ = tx.send(DecodeMsg::AudioReady { sample_rate: audio.sample_rate, samples: samples.clone() });
-            run_decode(&ctx1, &tx, path_str, audio.sample_rate, samples);
+            run_decode(&ctx1, &tx, path_str, audio.sample_rate, samples, 0);
         });
     }
 
@@ -262,6 +271,8 @@ impl KgstvApp {
                 self.live = None; // gerçek zamanlı oynatma canlı mikrofon dinlemeyi durdurur
                 self.last_anchor = None;
                 self.wav_sim = Some(kgstv_modem::PlaybackSim::start(audio.samples, audio.sample_rate));
+                self.wav_sim_frames_applied = 0;
+                self.wav_sim_final_pass_done = false;
                 self.last_wav_sim_decode = Instant::now() - WAV_SIM_REDECODE_INTERVAL; // hemen tetikle
             }
             Err(e) => {
@@ -293,37 +304,56 @@ impl KgstvApp {
         self.rx = Some(rx);
         let ctx1 = ctx.clone();
         std::thread::spawn(move || {
-            run_decode(&ctx1, &tx, "(canlı)".to_string(), sample_rate, samples);
+            run_decode(&ctx1, &tx, "(canlı)".to_string(), sample_rate, samples, 0);
         });
     }
 
-    /// `maybe_kick_live_decode` ile aynı mantık, gerçek zamanlı WAV oynatma simülasyonu için:
-    /// tampon o ana kadar oynatılmış kısımla sınırlı olduğundan hem tile'lar gerçek hızda gelir
-    /// hem göz diyagramı sadece "şu ana kadar alınan" sesi görür.
+    /// `maybe_kick_live_decode`'a benzer, ama İKİ önemli farkla — ikisi de kullanıcının
+    /// gördüğü "sürekli başa dönüp yeniden tarıyor" sorununu çözmek için:
+    ///
+    /// 1. **Durum sıfırlanmaz, artımlı uygulanır**: `decode_wav_sequential_cb`'nin durumu
+    ///    hatırlayan bir API'si olmadığından her pas'ta baştan yürümek ZORUNDA, ama bunu
+    ///    `reset_decode_state()` ile UI'a "her seferinde temiz sayfa" gibi göstermek yerine,
+    ///    önceki pas'larda zaten görülmüş (`wav_sim_frames_applied`) frame'leri `run_decode`'a
+    ///    sessizce atlatıp SADECE yeni frame'leri uyguluyoruz — görüntü/log asla silinmez,
+    ///    sadece büyür.
+    /// 2. **Güvenlik payı**: tamponun en ucuna kadar decode etmek, o an tam ortasında kesilmiş
+    ///    bir frame'i (bozuk bitlerle) yanlış çözüp KALICI olarak ekrana çizme riski taşır
+    ///    (artık her pas'ta silinmediğinden, önceki davranışın aksine bu asla düzelmezdi) —
+    ///    bu yüzden en son ~0.25sn'lik kısmı decode dışında bırakıyoruz.
     fn maybe_kick_wav_sim_decode(&mut self, ctx: &egui::Context) {
         let Some(sim) = &self.wav_sim else { return };
+        if self.wav_sim_final_pass_done {
+            return; // oynatma bitti ve son (tam) pas zaten yapıldı — artık tekrar denemeye gerek yok
+        }
         if self.decoding || self.last_wav_sim_decode.elapsed() < WAV_SIM_REDECODE_INTERVAL {
             return;
         }
-        if sim.len() < 4096 {
-            return; // henüz anlamlı bir decode denemesi için yeterli örnek yok
+        let sample_rate = sim.sample_rate;
+        let raw = sim.snapshot();
+        let is_done = sim.is_done();
+        // Oynatma bittiyse artık "hareketli bir hedef" yok — güvenlik payına gerek kalmadan
+        // kalan her şeyi decode edebiliriz.
+        let safety_margin = if is_done { 0 } else { ((0.25 * sample_rate) as usize).min(raw.len()) };
+        let safe_len = raw.len() - safety_margin;
+        if safe_len < 4096 {
+            return; // henüz anlamlı bir decode denemesi için yeterli "güvenli" veri yok
         }
         self.last_wav_sim_decode = Instant::now();
-        let sample_rate = sim.sample_rate;
-        let samples = Arc::new(sim.snapshot());
+        self.wav_sim_final_pass_done = is_done;
+        let samples = Arc::new(raw[..safe_len].to_vec());
         let received_secs = samples.len() as f64 / sample_rate;
         let total_secs = sim.total_len() as f64 / sample_rate;
         self.last_audio = Some((sample_rate, samples.clone()));
-        self.last_anchor = None; // yeni anchor decode bitince gelecek
 
-        self.reset_decode_state();
         self.decoding = true;
         let (tx, rx): (Sender<DecodeMsg>, Receiver<DecodeMsg>) = mpsc::channel();
         self.rx = Some(rx);
         let ctx1 = ctx.clone();
         let label = format!("(gerçek zamanlı, {received_secs:.1}/{total_secs:.1} sn)");
+        let skip = self.wav_sim_frames_applied;
         std::thread::spawn(move || {
-            run_decode(&ctx1, &tx, label, sample_rate, samples);
+            run_decode(&ctx1, &tx, label, sample_rate, samples, skip);
         });
     }
 
@@ -596,6 +626,11 @@ impl KgstvApp {
                 DecodeMsg::Done { anchor } => {
                     self.decoding = false;
                     self.last_anchor = Some(anchor);
+                    if self.wav_sim.is_some() {
+                        // Bir sonraki pas bu kadarını sessizce atlayıp sadece yeni frame'leri
+                        // uygulasın (bkz. `maybe_kick_wav_sim_decode`).
+                        self.wav_sim_frames_applied = self.frames_total;
+                    }
                     self.status = format!(
                         "Tamamlandı — senkron anchor={anchor:.1} örnek, {} frame, tile: {}/{}",
                         self.frames_total, self.tiles_ok, self.tiles_total
@@ -610,10 +645,25 @@ impl KgstvApp {
     }
 }
 
-/// Ortak decode çalıştırıcısı: hem dosya modu hem canlı mod tarafından, zaten arka planda
-/// çalışan bir thread içinden çağrılır. Senkron bulur, frame frame yürür, her frame'i
-/// `tx` üzerinden UI thread'ine bildirir.
-fn run_decode(ctx: &egui::Context, tx: &Sender<DecodeMsg>, label: String, sample_rate: f64, samples: Arc<Vec<f64>>) {
+/// Ortak decode çalıştırıcısı: dosya modu, canlı mod ve gerçek-zamanlı WAV oynatma simülasyonu
+/// tarafından, zaten arka planda çalışan bir thread içinden çağrılır. Senkron bulur, frame
+/// frame yürür, her frame'i `tx` üzerinden UI thread'ine bildirir.
+///
+/// `skip_frames`: yürüyüşün baştan `skip_frames` kadarını (zaten önceki bir pas'ta UI'a
+/// uygulanmış) SESSİZCE atlar, sadece YENİ frame'leri bildirir. Gerçek-zamanlı WAV oynatma
+/// simülasyonu için — tampon her pas'ta büyüdüğünden `decode_wav_sequential_cb` yine baştan
+/// yürümek zorunda (durum tutan bir API yok), ama bunu UI'a her seferinde "en baştan" gibi
+/// göstermek (görüntü/log'u sıfırlayıp yeniden doldurmak) kullanıcıya sanki her pas'ta "başa
+/// dönüp yeniden tarıyormuş" gibi görünür. Dosya/canlı modda `skip_frames=0` (her pas gerçekten
+/// yeni/farklı bir tarama).
+fn run_decode(
+    ctx: &egui::Context,
+    tx: &Sender<DecodeMsg>,
+    label: String,
+    sample_rate: f64,
+    samples: Arc<Vec<f64>>,
+    skip_frames: usize,
+) {
     let _ = tx.send(DecodeMsg::Started { label, sample_rate, n_samples: samples.len() });
     ctx.request_repaint();
 
@@ -623,9 +673,13 @@ fn run_decode(ctx: &egui::Context, tx: &Sender<DecodeMsg>, label: String, sample
 
     let tx2 = tx.clone();
     let ctx2 = ctx.clone();
+    let mut seen = 0usize;
     let anchor = kgstv_modem::decode_wav_sequential_cb(&samples, sample_rate, coarse_search_len, 5000, move |fr| {
-        let _ = tx2.send(DecodeMsg::Frame(fr));
-        ctx2.request_repaint();
+        if seen >= skip_frames {
+            let _ = tx2.send(DecodeMsg::Frame(fr));
+            ctx2.request_repaint();
+        }
+        seen += 1;
     });
     let _ = tx.send(DecodeMsg::Done { anchor });
     ctx.request_repaint();
