@@ -127,16 +127,30 @@ pub fn play_blocking(samples: &[f64], sample_rate: f64) -> Result<(), String> {
         .supported_output_configs()
         .map_err(|e| format!("Çıkış yapılandırmaları alınamadı: {e}"))?
         .collect();
-    let range = ranges
-        .iter()
-        .find(|r| r.min_sample_rate() <= want_sr && want_sr <= r.max_sample_rate())
-        .ok_or_else(|| format!("Çıkış cihazı {want_sr} Hz'i desteklemiyor"))?;
-    let supported = range.clone().with_sample_rate(want_sr);
+
+    // Birçok gerçek çıkış cihazı (ör. dahili hoparlörler) SADECE kendi sabit örnekleme hızını
+    // (genelde 48000 Hz) destekler, 44100 Hz'i değil. İstenen hız desteklenmiyorsa cihazın
+    // varsayılan yapılandırmasına düş ve sesi o hıza yeniden örnekle (basit doğrusal
+    // interpolasyon — TX sinyalinin bant genişliği düşük olduğundan (500-2500Hz) pratikte
+    // kayıpsız sayılabilir).
+    let exact = ranges.iter().find(|r| r.min_sample_rate() <= want_sr && want_sr <= r.max_sample_rate());
+    let (supported, playback_samples): (cpal::SupportedStreamConfig, Vec<f64>) = match exact {
+        Some(range) => (range.clone().with_sample_rate(want_sr), samples.to_vec()),
+        None => {
+            let default_cfg = device
+                .default_output_config()
+                .map_err(|e| format!("Varsayılan çıkış yapılandırması alınamadı: {e}"))?;
+            let target_sr = default_cfg.sample_rate() as f64;
+            (default_cfg, resample_linear(samples, sample_rate, target_sr))
+        }
+    };
+
     let sample_format = supported.sample_format();
     let config: cpal::StreamConfig = supported.config();
     let channels = config.channels as usize;
+    let effective_sample_rate = config.sample_rate as f64;
 
-    let samples = Arc::new(samples.to_vec());
+    let samples = Arc::new(playback_samples);
     let total = samples.len();
     let pos = Arc::new(AtomicUsize::new(0));
     let err_fn = |e| eprintln!("[kgstv-modem::live] çıkış akışı hatası: {e}");
@@ -172,9 +186,32 @@ pub fn play_blocking(samples: &[f64], sample_rate: f64) -> Result<(), String> {
     };
 
     stream.play().map_err(|e| format!("Çıkış akışı başlatılamadı: {e}"))?;
-    let duration = Duration::from_secs_f64(total as f64 / sample_rate + 0.3);
+    // `total`/`samples`, yeniden örneklenmiş olabileceğinden süre hesabı `effective_sample_rate`
+    // (cihazın gerçekten çaldığı hız) ile yapılmalı — orijinal `sample_rate` ile DEĞİL.
+    let duration = Duration::from_secs_f64(total as f64 / effective_sample_rate + 0.3);
     std::thread::sleep(duration);
     Ok(())
+}
+
+/// Basit doğrusal interpolasyonla yeniden örnekleme (`from_sr` Hz -> `to_sr` Hz). Yüksek kaliteli
+/// bir resampler değil, ama KG-STV'nin dar bandı (500-2500Hz) için, sadece hoparlörden çalma
+/// amacıyla yeterli — WAV kaydı/decode her zaman orijinal (yeniden örneklenmemiş) hızda kalır.
+fn resample_linear(samples: &[f64], from_sr: f64, to_sr: f64) -> Vec<f64> {
+    if samples.is_empty() || (from_sr - to_sr).abs() < 1e-6 {
+        return samples.to_vec();
+    }
+    let ratio = from_sr / to_sr;
+    let out_len = ((samples.len() as f64) / ratio).round().max(1.0) as usize;
+    let mut out = Vec::with_capacity(out_len);
+    for i in 0..out_len {
+        let src_pos = i as f64 * ratio;
+        let i0 = src_pos.floor() as usize;
+        let frac = src_pos - i0 as f64;
+        let s0 = samples.get(i0).copied().unwrap_or(0.0);
+        let s1 = samples.get(i0 + 1).copied().unwrap_or(s0);
+        out.push(s0 + (s1 - s0) * frac);
+    }
+    out
 }
 
 fn pull_upmixed<T: Copy + Default>(
@@ -208,5 +245,41 @@ fn push_downmixed<T: Copy>(
     };
     if let Ok(mut buf) = buffer.lock() {
         buf.push_slice(&mono);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resample_linear_preserves_low_frequency_tone() {
+        // 44100 Hz'de üretilen 1500 Hz'lik (KG-STV bandının merkezi) bir ton, 48000 Hz'e yeniden
+        // örneklendiğinde hâlâ ~1500 Hz civarında, kabaca aynı genlikte olmalı (basit doğrusal
+        // interpolasyonun bu dar bant için yeterli olduğunun kanıtı — bkz. `play_blocking`).
+        let from_sr = 44100.0;
+        let to_sr = 48000.0;
+        let freq = 1500.0;
+        let n = 4410; // 0.1 sn
+        let input: Vec<f64> =
+            (0..n).map(|i| (2.0 * std::f64::consts::PI * freq * i as f64 / from_sr).sin()).collect();
+        let output = resample_linear(&input, from_sr, to_sr);
+
+        // Süre korunmalı (± birkaç örnek).
+        let expected_len = (n as f64 * to_sr / from_sr).round() as usize;
+        assert!((output.len() as i64 - expected_len as i64).abs() <= 2, "len={}", output.len());
+
+        // Çıkışta hâlâ ~1500Hz civarında salınım var mı: basit bir sıfır-geçiş sayımıyla kontrol et.
+        let zero_crossings = output.windows(2).filter(|w| w[0] * w[1] < 0.0).count();
+        let expected_crossings = (2.0 * freq * (output.len() as f64 / to_sr)).round();
+        let ratio = zero_crossings as f64 / expected_crossings;
+        assert!((0.9..1.1).contains(&ratio), "zero_crossings={zero_crossings} expected~={expected_crossings}");
+    }
+
+    #[test]
+    fn resample_linear_identity_when_rates_match() {
+        let input = vec![0.1, 0.2, -0.3, 0.4];
+        let output = resample_linear(&input, 44100.0, 44100.0);
+        assert_eq!(output, input);
     }
 }
