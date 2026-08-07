@@ -94,6 +94,46 @@ impl<'a> ToneClock<'a> {
     pub fn msk_bits(&self, t0: f64, n: i64) -> Vec<u8> {
         (0..n).map(|i| self.msk_bit(t0, i)).collect()
     }
+
+    /// Herhangi bir kesirli örnek konumunda (sembol ızgarasına bağlı olmadan) yumuşak
+    /// (soft) MSK karar metriği: `(p1-p0)/(p1+p0)`, yaklaşık [-1,1] aralığında — -1 saf
+    /// 1200Hz (bit 0), +1 saf 1800Hz (bit 1). `center`'ı ortalayan `tb` genişliğinde
+    /// Hanning-pencereli bir pencere kullanır. `msk_bit`'in aksine sembol sınırlarına
+    /// kilitlenmez; göz diyagramı (eye diagram) gibi zamanlama/gürültü görselleştirmeleri
+    /// için tasarlandı.
+    pub fn soft_metric_at(&self, center: f64) -> f64 {
+        let half = self.tb / 2.0;
+        let a = (center - half).round().max(0.0) as usize;
+        let b = ((center + half).round().max(0.0) as usize).min(self.data.len()).max(a);
+        if b <= a {
+            return 0.0;
+        }
+        let seg = &self.data[a..b];
+        let n = seg.len();
+        let (mut re0, mut im0) = (0.0f64, 0.0f64);
+        let (mut re1, mut im1) = (0.0f64, 0.0f64);
+        for (k, &x) in seg.iter().enumerate() {
+            let w = if n > 3 {
+                0.5 - 0.5 * (2.0 * PI * k as f64 / (n as f64 - 1.0)).cos()
+            } else {
+                1.0
+            };
+            let xw = x * w;
+            let ph0 = -2.0 * PI * MSK_FREQS[0] * k as f64 / self.sample_rate;
+            re0 += xw * ph0.cos();
+            im0 += xw * ph0.sin();
+            let ph1 = -2.0 * PI * MSK_FREQS[1] * k as f64 / self.sample_rate;
+            re1 += xw * ph1.cos();
+            im1 += xw * ph1.sin();
+        }
+        let p0 = (re0 * re0 + im0 * im0).sqrt();
+        let p1 = (re1 * re1 + im1 * im1).sqrt();
+        if p0 + p1 < 1e-9 {
+            0.0
+        } else {
+            (p1 - p0) / (p1 + p0)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -108,5 +148,26 @@ mod tests {
         let clk = ToneClock::new(&audio, sr);
         let decoded = clk.msk_bits(0.0, bits.len() as i64);
         assert_eq!(decoded, bits);
+    }
+
+    #[test]
+    fn soft_metric_matches_hard_bit_polarity() {
+        let sr = 44100.0;
+        let bits: Vec<u8> = vec![0, 1, 0, 1, 1, 0];
+        let audio = modulate_msk(&bits, sr);
+        let clk = ToneClock::new(&audio, sr);
+        for (i, &bit) in bits.iter().enumerate() {
+            let center = (i as f64 + 0.5) * clk.tb();
+            let m = clk.soft_metric_at(center);
+            // Komşu sembollerin farklı frekanslarından sızan enerji (CPFSK'nin sürekli-faz
+            // doğası + tam sembole hizalanmamış merkezleme) genliği zayıflatabilir; işaret
+            // (yön) yine de doğru olmalı — bu, sert `msk_bit` kararının aksine sürekli bir
+            // görselleştirme metriği (bkz. göz diyagramı).
+            if bit == 1 {
+                assert!(m > 0.02, "bit=1 için metrik pozitif olmalı, m={m}");
+            } else {
+                assert!(m < -0.02, "bit=0 için metrik negatif olmalı, m={m}");
+            }
+        }
     }
 }

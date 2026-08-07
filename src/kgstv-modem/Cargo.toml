@@ -8,3 +8,4 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 kgstv-core = { path = "../kgstv-core" }
 hound = "3.5"
+cpal = "0.18.1"

@@ -23,7 +23,7 @@ mühendislikle **doğrulandı**. Ayrıntılar: [`docs/protocol_spec.md`](docs/pr
 | **Rust JPEG codec** (`kgstv-core::jpeg`) | ✅ Encode+decode, gerçek kayıt verisiyle doğrulandı |
 | 4L-FSK demodülasyon kalibrasyonu | ⚠️ Kısmi (~%80-83 sembol doğruluğu, yetersiz) |
 | **Rust ses I/O + MSK modülatör/demodülatör** (`kgstv-modem`) | ✅ Uçtan uca doğrulandı: gerçek OH2UDS MSK kaydında 300/300 tile, sıfır bit hatasıyla decode edildi |
-| **Masaüstü GUI** (`kgstv-gui`, egui/eframe) | ✅ İlk sürüm çalışıyor — Win/Linux/macOS tek kod tabanı: WAV aç, ilerlemeli tile çizimi, frame günlüğü |
+| **Masaüstü GUI** (`kgstv-gui`, egui/eframe) | ✅ Win/Linux/macOS tek kod tabanı: WAV aç, ilerlemeli tile çizimi, frame günlüğü, **canlı (mikrofon) decode**, **göz diyagramı** |
 | 4L-FSK ses katmanı + platform UI'ında 4L-FSK desteği | ⏳ Henüz başlanmadı |
 | iOS/Android UI | ⏳ Henüz başlanmadı |
 
@@ -49,11 +49,14 @@ mühendislikle **doğrulandı**. Ayrıntılar: [`docs/protocol_spec.md`](docs/pr
 - `src/kgstv-modem/` — Rust ses katmanı (cargo workspace üyesi, `kgstv-core` üzerine inşa
   edilir): WAV I/O (`wav`), bant-geçiren ön-filtre (`filter`), gerçek sürekli-faz MSK
   modülasyon/demodülasyon + ton-korelasyonu bit algılama (`msk`), senkron kelimesi arama
-  (`sync`), üst seviye TX/RX oturum API'si (`session`). `examples/decode_wav.rs`: bir WAV
+  (`sync`), üst seviye TX/RX oturum API'si (`session`), varsayılan mikrofon/soundcard'dan
+  sürekli örnek yakalama (`live`, `cpal` üzerinden). `examples/decode_wav.rs`: bir WAV
   dosyasını uçtan uca decode edip PPM görüntü üreten CLI aracı.
 - `src/kgstv-gui/` — masaüstü GUI (cargo workspace üyesi, egui/eframe): WAV dosyası aç
-  (native dosya seçici, `rfd`), arka planda `kgstv-modem` ile decode et, tile'ları geldikçe
-  canlı olarak çiz, frame günlüğünü göster. Windows/Linux/macOS için tek kod tabanı.
+  (native dosya seçici, `rfd`) ya da canlı (mikrofon) decode başlat, arka planda `kgstv-modem`
+  ile decode et, tile'ları geldikçe canlı olarak çiz, frame günlüğünü göster, sinyal
+  kalitesi/zamanlamasını değerlendirmek için göz diyagramı (eye diagram) çiz. Windows/Linux/
+  macOS için tek kod tabanı.
 
 ## Geliştirme
 
@@ -81,7 +84,6 @@ Bkz. proje görev listesi ve `docs/protocol_spec.md`'nin ilgili bölümleri:
 2. `kgstv-modem::session`'daki ardışık (sıralı) frame yürüyüşünü, gürültülü gerçek off-air
    kayıtlar için `decode_session.py`'deki bağımsız-aday-tarama yaklaşımına taşı (uzun/gürültülü
    kayıtlarda senkron kaybında sıralı yürüyüş durur)
-3. `kgstv-gui`'ye TX (görüntü/metin gönderme) desteği, canlı ses girişinden decode (dosya
-   yerine mikrofon/soundcard), 4L-FSK seçeneği eklemek
+3. `kgstv-gui`'ye TX (görüntü/metin gönderme) desteği ve 4L-FSK seçeneği eklemek
 4. iOS/Android UI (egui zaten Android/iOS derlemesini destekliyor — masaüstü kod tabanı taşınabilir
    olmalı; platform-özel ses I/O entegrasyonu ayrıca gerekir)
