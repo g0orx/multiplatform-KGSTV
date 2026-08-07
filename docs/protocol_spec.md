@@ -227,6 +227,28 @@ bloğu (`com=1`)**, çoğu geçerli CRC ile. Bu şunu kesinleştiriyor:
 besleyip (varsayılan/standart tablolarla dene, tutmazsa `kgstv.exe`'den tabloları çıkar) piksel
 verisine çevirmek — bu, "resmin encode/decode" sorusunun son parçası.
 
+### ✅ KRİTİK DÜZELTME — Tile İçindeki 6 Blok DC Zincirlemez (2026-08-07)
+
+Gerçek off-air kayıtlarla (TA4SO, BBC test kartı) piksel-piksel karşılaştırma yapılınca, CRC
+geçen bloklarda bile renklerin referansla uyuşmadığı görüldü. Kontrollü **düz renk** test
+görüntüleriyle (tamamen kırmızı / tamamen mavi 320×240, OH2UDS tarafından kaydedilmiş) kesin
+teşhis kondu: tamamen düz bir 16×16 karonun 4 Y bloğu, standart JPEG'in aksine **birbirine
+zincirlenmeden**, her biri **bağımsız, sıfırdan başlayan bir DC değeri** taşıyor. Eski kodumuz
+(klasik JPEG MCU mantığıyla) bu 4 değeri konvülasyon zinciri gibi üst üste **biriktiriyordu**
+(`dc = dc_pred + diff; dc_pred = dc`), bu da düz kırmızı bir karoda bile -58,-116,-174,-232 gibi
+saçma, gittikçe büyüyen bir dizi üretiyordu (oysa gerçek fark ≈0 olmalıydı — görüntü tamamen
+düz). Aynı zincirleme hatası Cb/Cr arasında da vardı.
+
+**Düzeltme:** `research/decoder/jpeg_block.py::decode_16x16_block` — 6 bloğun (Y0,Y1,Y2,Y3,Cr,Cb)
+her biri artık **predictor=0 ile bağımsız** decode ediliyor (chain YOK).
+
+**Doğrulama:** BBC test kartı (`KG-STV_MSK_Convolution.wav`) ile referans (`1.0_scale.png`)
+arasındaki ortalama piksel farkı **222.99 → 125.37**'ye düştü ve görsel olarak kızın yüzü,
+kırmızı eşarbı, yeşil palyaço ve alttaki "BBC" yazısı artık **açıkça tanınabilir**. Yatay/dikey
+kırmızı-beyaz çizgili kontrollü test görüntüleri **300/300 karo, keskin ve doğru kenarlarla**
+decode edildi. Gerçek TA4SO kaydında ortalama fark (sadece decode edilen 57 karo) **~117**'ye
+düştü ve görsel olarak lacivert arka plan + krem/sarı detaylar artık referansla tutarlı.
+
 ### ✅ JPEG Entropy Katmanı — Standart Tablolarla Doğrulandı
 
 `research/decoder/jpeg_block.py`, standart ITU T.81 Annex K Huffman tabloları (DC/AC,

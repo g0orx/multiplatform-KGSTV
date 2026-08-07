@@ -198,16 +198,24 @@ def decode_16x16_block(bits, quality=10, verbose=False):
     qt_c = scale_qt(STD_CHROMA_QT, quality)
 
     results = []
-    dc_pred_y = 0
-    dc_pred_c = 0
-    plan = [('Y',0),('Y',0),('Y',0),('Y',0),('Cb',0),('Cr',0)]
+    # Gerçek off-air kayıtla (kontrollü düz-renk test görüntüleriyle: tamamen düz kırmızı/mavi
+    # bir 16x16 karonun 4 Y bloğu arasında DC "farkının" MUTLAKA sıfıra yakın olması gerekirken,
+    # bizim eski kodumuz her blokta AYNI, sabit bir "diff" değerini BİRİKTİREREK (chain ederek)
+    # her seferinde daha da büyüyen, saçma bir DC dizisi üretiyordu — örn. düz kırmızıda
+    # -58,-116,-174,-232 (aslında her blok bağımsız olarak DC=-58 taşıyor olmalıydı).
+    # Sonuç: KG-STV, standart JPEG'in aksine, bir tile içindeki 6 bloğun DC değerlerini
+    # BİRBİRİNE ZİNCİRLEMEDEN, her birini kendi başına (predictor=0) kodluyor.
+    plan = [('Y',0),('Y',0),('Y',0),('Y',0),('Cr',0),('Cb',0)]
     try:
         for comp, _ in plan:
             if comp == 'Y':
-                coeffs, dc_pred_y = decode_block(br, dc_luma_tbl, ac_luma_tbl, dc_pred_y)
+                coeffs, _ = decode_block(br, dc_luma_tbl, ac_luma_tbl, 0)
                 qt = qt_y
+            elif comp == 'Cr':
+                coeffs, _ = decode_block(br, dc_chroma_tbl, ac_chroma_tbl, 0)
+                qt = qt_c
             else:
-                coeffs, dc_pred_c = decode_block(br, dc_chroma_tbl, ac_chroma_tbl, dc_pred_c)
+                coeffs, _ = decode_block(br, dc_chroma_tbl, ac_chroma_tbl, 0)
                 qt = qt_c
             block = np.zeros((8,8))
             for i,c in enumerate(coeffs):
