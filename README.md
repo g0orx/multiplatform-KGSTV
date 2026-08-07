@@ -1,4 +1,4 @@
-# KGSTV — Cross-Platform Yeniden Yazım
+# Atölye m-KGSTV — Cross-Platform Yeniden Yazım
 
 **Amaç:** JJ0OBZ (K.G., Niigata-Myoko, Japonya) tarafından yazılan, sadece Windows'ta çalışan
 **KG-STV** (dijital SSTV) yazılımının; Windows, Linux, macOS ve (mümkünse) iOS/Android'de

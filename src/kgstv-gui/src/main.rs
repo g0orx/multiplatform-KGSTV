@@ -1015,14 +1015,16 @@ impl eframe::App for KgstvApp {
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1100.0, 800.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1100.0, 800.0])
+            .with_title("Atölye m-KGSTV"),
         ..Default::default()
     };
     // İsteğe bağlı: `kgstv-gui <kayit.wav>` şeklinde çağrılırsa o dosyayı açılışta otomatik
     // yükler (native dosya seçiciyle uğraşmadan hızlı test/betikleme için kullanışlı).
     let cli_wav_path = std::env::args().nth(1).map(PathBuf::from);
     eframe::run_native(
-        "KGSTV — Cross-Platform",
+        "Atölye m-KGSTV",
         options,
         Box::new(move |cc| {
             let mut app = KgstvApp::default();
