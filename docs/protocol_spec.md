@@ -320,6 +320,35 @@ gösteriyor (örn. yatay bantlama — bir fotoğraftaki yatay kenar/gradyanla ta
 biliniyor. Görüntü katmanında kalan tek şey, üretim kalitesinde bir Rust implementasyonu yazmak
 — bilinmeyen bir parametre yok.
 
+### ✅ `kgstv-modem` (Rust ses I/O + MSK modem) — Gerçek Kayıtla Uçtan Uca Doğrulandı (2026-08-07)
+
+`src/kgstv-modem/` cargo workspace üyesi olarak yazıldı: `wav` (hound tabanlı WAV I/O, örnekleme
+hızı dosyadan dinamik okunur), `filter` (RBJ biquad bant-geçiren, ileri+geri filtfilt), `msk`
+(disassembly ile doğrulanmış gerçek sürekli-faz sentezi + Hanning-pencereli DFT ton-korelasyonu
+demodülasyonu), `sync` (kaba+ince iki aşamalı senkron kelimesi arama) ve bunları
+`kgstv-core::frame`/`jpeg` ile birleştiren üst seviye `session` (ardışık frame yürüyüşü + TX
+oturum derleyicisi).
+
+Gerçek `samples/OH2UDS-*-mode-msk-*.wav` kayıtlarında (`cargo run -p kgstv-modem --release
+--example decode_wav`) uçtan uca doğrulama:
+- Senkron, kaydın başından ~2.93sn sonra (kayıt cihazı başlatma gecikmesi) doğru şekilde
+  bulundu — kaba arama adımının `tb/4` (~sembol süresinin dörtte biri) olması ve ince aramanın
+  eşitlik durumunda kaba sonuca en yakın konumu tercih etmesi (aksi hâlde `window()`'ın negatif
+  konumları 0'a clamp etmesi sahte eşitliklere yol açıyordu) gerekiyordu.
+- `duz-kirmizi` (solid red) kaydı: 346 frame, **300/300 görüntü tile'ı** (`header_metric=0`,
+  yani Viterbi'de sıfır bit hatası; tüm veri CRC'leri geçti) decode edildi, üretilen görüntü
+  tam olarak beklenen **RGB=(178,0,0)** — `kgstv-core::jpeg` testindeki gerçek yakalanan
+  kırmızı tile ile bit-eşleşiyor.
+- `horizontal-kirmizi-beyaz` (CONV kodlu) kaydı: yine 300/300 tile decode edildi; kırmızı/beyaz
+  sınırındaki 1-2 geçiş tile'ında beklenen lossy-JPEG kenar bulanıklığı (küçük renk karışımı,
+  ~%0.6 piksel) gözlendi — bu bir decoder hatası değil, `sc=10` (düşük kalite) kuantizasyonun
+  keskin bir kenarda beklenen davranışı.
+
+**Sonuç:** MSK ses katmanı artık gerçek off-air/kontrollü kayıtlarla üretim kalitesinde
+doğrulanmış durumda — WAV'dan piksel-doğru görüntüye kadar tüm zincir Rust'ta çalışıyor. 4L-FSK
+ses katmanı henüz eklenmedi (bkz. yukarıdaki kalibrasyon notu — basit ton-korelasyonu mimarisi
+CPFSK için yapısal olarak yetersiz, MLSD/Viterbi tabanlı bir demodülatör gerekiyor).
+
 ### Hâlâ Doğrulanması Gereken (görüntü modu için)
 
 Yukarıdakiler **metin + NORM + MSK** kombinasyonu için kanıtlanmış. Görüntü modu için ek doğrulama

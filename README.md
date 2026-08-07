@@ -22,8 +22,10 @@ mühendislikle **doğrulandı**. Ayrıntılar: [`docs/protocol_spec.md`](docs/pr
 | JPEG blok içi DC kodlama | ✅ Kritik hata bulundu ve düzeltildi (6 blok birbirine zincirlenmez) |
 | **Rust JPEG codec** (`kgstv-core::jpeg`) | ✅ Encode+decode, gerçek kayıt verisiyle doğrulandı |
 | 4L-FSK demodülasyon kalibrasyonu | ⚠️ Kısmi (~%80-83 sembol doğruluğu, yetersiz) |
-| Rust ses I/O + modülatör/demodülatör | ⏳ Henüz başlanmadı |
-| Platform UI'ları | ⏳ Henüz başlanmadı |
+| **Rust ses I/O + MSK modülatör/demodülatör** (`kgstv-modem`) | ✅ Uçtan uca doğrulandı: gerçek OH2UDS MSK kaydında 300/300 tile, sıfır bit hatasıyla decode edildi |
+| **Masaüstü GUI** (`kgstv-gui`, egui/eframe) | ✅ İlk sürüm çalışıyor — Win/Linux/macOS tek kod tabanı: WAV aç, ilerlemeli tile çizimi, frame günlüğü |
+| 4L-FSK ses katmanı + platform UI'ında 4L-FSK desteği | ⏳ Henüz başlanmadı |
+| iOS/Android UI | ⏳ Henüz başlanmadı |
 
 ## Dizin Yapısı
 
@@ -44,12 +46,26 @@ mühendislikle **doğrulandı**. Ayrıntılar: [`docs/protocol_spec.md`](docs/pr
   - `samples/decoded/` — decode edilen çıktı PNG'leri
 - `src/kgstv-core/` — Rust çekirdek kütüphane (cargo workspace üyesi), platform-bağımsız
   protokol implementasyonu: framing, konvolüsyonel kod, whitening, CRC, header, **JPEG codec**
+- `src/kgstv-modem/` — Rust ses katmanı (cargo workspace üyesi, `kgstv-core` üzerine inşa
+  edilir): WAV I/O (`wav`), bant-geçiren ön-filtre (`filter`), gerçek sürekli-faz MSK
+  modülasyon/demodülasyon + ton-korelasyonu bit algılama (`msk`), senkron kelimesi arama
+  (`sync`), üst seviye TX/RX oturum API'si (`session`). `examples/decode_wav.rs`: bir WAV
+  dosyasını uçtan uca decode edip PPM görüntü üreten CLI aracı.
+- `src/kgstv-gui/` — masaüstü GUI (cargo workspace üyesi, egui/eframe): WAV dosyası aç
+  (native dosya seçici, `rfd`), arka planda `kgstv-modem` ile decode et, tile'ları geldikçe
+  canlı olarak çiz, frame günlüğünü göster. Windows/Linux/macOS için tek kod tabanı.
 
 ## Geliştirme
 
 ```sh
-# Rust çekirdeğini test et
+# Rust çekirdeğini (+ modem katmanını) test et
 cargo test --workspace
+
+# Rust CLI: gerçek/sentetik bir MSK WAV kaydını uçtan uca decode et (PPM görüntü üretir)
+cargo run -p kgstv-modem --release --example decode_wav -- samples/<kayit>.wav çıktı.ppm
+
+# Masaüstü GUI'yi çalıştır
+cargo run -p kgstv-gui --release
 
 # Python prototip decoder: bir WAV kaydını PNG'ye decode et
 cd research && source venv/bin/activate
@@ -60,7 +76,12 @@ python3 decoder/decode_session.py ../samples/<kayit>.wav ../samples/decoded/<cik
 
 Bkz. proje görev listesi ve `docs/protocol_spec.md`'nin ilgili bölümleri:
 1. 4L-FSK için MLSD/Viterbi-tabanlı CPFSK demodülatörü (basit sembol-bazlı algılama
-   yapısal olarak yetersiz kaldı — ton aralığı ortogonal değil)
-2. Rust'ta ses I/O + modülatör/demodülatör (MSK) katmanını yaz — `jpeg` codec'i artık hazır,
-   sıradaki eksik parça bu
-3. Platform UI'ları (Rust çekirdek + platform-native arayüz, kullanıcı tercihi)
+   yapısal olarak yetersiz kaldı — ton aralığı ortogonal değil) — `kgstv-modem` MSK için hazır,
+   4L-FSK aynı ses katmanına eklenecek
+2. `kgstv-modem::session`'daki ardışık (sıralı) frame yürüyüşünü, gürültülü gerçek off-air
+   kayıtlar için `decode_session.py`'deki bağımsız-aday-tarama yaklaşımına taşı (uzun/gürültülü
+   kayıtlarda senkron kaybında sıralı yürüyüş durur)
+3. `kgstv-gui`'ye TX (görüntü/metin gönderme) desteği, canlı ses girişinden decode (dosya
+   yerine mikrofon/soundcard), 4L-FSK seçeneği eklemek
+4. iOS/Android UI (egui zaten Android/iOS derlemesini destekliyor — masaüstü kod tabanı taşınabilir
+   olmalı; platform-özel ses I/O entegrasyonu ayrıca gerekir)

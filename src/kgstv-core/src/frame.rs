@@ -45,6 +45,16 @@ pub fn decode_data_norm(rx: &[u8], size_bits: usize) -> (Vec<u8>, bool) {
     (data, ok)
 }
 
+/// Ham veriyi (CONV: K=7 konvolüsyonel kodlu) whitened data-chunk bitstream'ine çevirir:
+/// data + 16-bit CRC, ardından konvolüsyonel kod + whitening (decode_data_conv'un tersi).
+pub fn encode_data_conv(data_bits: &[u8]) -> Vec<u8> {
+    let crc = crc16_aug_ccitt(data_bits);
+    let mut combined = data_bits.to_vec();
+    combined.extend(crc_to_bits(crc));
+    let encoded = conv_encode(&combined);
+    whiten(&encoded)
+}
+
 /// CONV (konvolüsyonel kodlu) whitened data-chunk'ı çözer.
 pub fn decode_data_conv(rx: &[u8], size_bits: usize) -> (Vec<u8>, bool) {
     let dew = whiten(rx);
@@ -99,5 +109,15 @@ mod tests {
         let (dec_data, ok) = decode_data_norm(&enc_data, 480);
         assert!(ok);
         assert_eq!(dec_data, data_bits);
+    }
+
+    #[test]
+    fn conv_data_roundtrip() {
+        let data_bits: Vec<u8> = vec![1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 0, 1, 1];
+        let enc = encode_data_conv(&data_bits);
+        assert_eq!(enc.len(), (data_bits.len() + 16) * 2);
+        let (dec, ok) = decode_data_conv(&enc, data_bits.len());
+        assert!(ok);
+        assert_eq!(dec, data_bits);
     }
 }
