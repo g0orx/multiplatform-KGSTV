@@ -112,8 +112,20 @@ pub fn decode_wav_sequential_cb(
 /// her frame kendi senkron kelimesiyle, sonda 3× END sinyali) ve ardından ses örneklerine
 /// encode eder. `header.size`, `data_bits.len()` ile TUTARLI olmalıdır (çağıran sorumludur).
 pub fn encode_session_audio(frames: &[(InfoChunk, Vec<u8>)], sample_rate: f64) -> Vec<f64> {
+    encode_session_audio_cb(frames, sample_rate, |_, _| {})
+}
+
+/// `encode_session_audio` ile aynı, ama her frame'in bit-düzeyi kodlaması bitince
+/// `on_progress(tamamlanan, toplam)` çağrılır — GUI gibi ilerleme çubuğu gösteren
+/// çağıranlar için (görüntü gönderiminde yüzlerce tile olabileceğinden).
+pub fn encode_session_audio_cb(
+    frames: &[(InfoChunk, Vec<u8>)],
+    sample_rate: f64,
+    mut on_progress: impl FnMut(usize, usize),
+) -> Vec<f64> {
+    let total = frames.len();
     let mut bits = frame::preamble_bits();
-    for (hdr, data_bits) in frames {
+    for (i, (hdr, data_bits)) in frames.iter().enumerate() {
         bits.extend(frame::sync_bits());
         bits.extend(frame::encode_header(hdr));
         if hdr.c == 1 {
@@ -121,6 +133,7 @@ pub fn encode_session_audio(frames: &[(InfoChunk, Vec<u8>)], sample_rate: f64) -
         } else {
             bits.extend(frame::encode_data_norm(data_bits));
         }
+        on_progress(i + 1, total);
     }
     // Normal tamamlanma: bitiş sinyali 3 kez (bkz. protocol_spec.md, çerçeveleme kuralları).
     let end_hdr = InfoChunk { sys: 0, com: Command::End as u8, c: 0, m: 0, x: 0, y: 0, sc: 0, size: 0, crc: 0 };
@@ -193,5 +206,52 @@ mod tests {
         assert_eq!(frames[1].data_bits.as_ref().unwrap(), &text_bits);
 
         assert_eq!(frames[2].header.com, Command::End as u8);
+    }
+
+    /// TX -> RX uçtan uca: `kgstv_core::rgb_to_tile`/`encode_tile` ile encode edilmiş görüntü
+    /// tile'ları, `encode_session_audio` ile ses'e çevrilip `decode_wav_sequential` ile geri
+    /// çözülüyor — `kgstv-gui`'nin TX özelliğinin kullandığı yolun tam bir aynası.
+    #[test]
+    fn full_session_image_roundtrip_solid_tiles() {
+        let sr = 44100.0;
+        let colors: [[u8; 3]; 3] = [[220, 30, 30], [30, 200, 30], [30, 30, 220]];
+        let quality = 10u8;
+        let mut frames = Vec::new();
+        for (i, &[r, g, b]) in colors.iter().enumerate() {
+            let rgb = [[[r, g, b]; 16]; 16];
+            let tile = kgstv_core::rgb_to_tile(&rgb);
+            let bits = kgstv_core::encode_tile(&tile, quality);
+            let hdr = InfoChunk {
+                sys: 0,
+                com: Command::Image as u8,
+                c: (i % 2) as u8, // NORM ve CONV karışık test et
+                m: 0,
+                x: i as u8,
+                y: 0,
+                sc: quality,
+                size: bits.len() as u16,
+                crc: 0,
+            };
+            frames.push((hdr, bits));
+        }
+
+        let audio = encode_session_audio(&frames, sr);
+        let (_anchor, decoded) = decode_wav_sequential(&audio, sr, 500, 20);
+
+        let image_frames: Vec<_> =
+            decoded.iter().filter(|f| f.header.com == Command::Image as u8).collect();
+        assert_eq!(image_frames.len(), colors.len());
+        for (i, fr) in image_frames.iter().enumerate() {
+            assert!(fr.data_crc_ok, "tile {i} CRC hatalı");
+            let bits = fr.data_bits.as_ref().unwrap();
+            let tile = kgstv_core::decode_tile(bits, fr.header.sc).expect("tile decode başarısız");
+            let rgb = kgstv_core::tile_to_rgb(&tile);
+            let [r, g, b] = rgb[8][8];
+            let [er, eg, eb] = colors[i];
+            // JPEG kayıplı olduğu için birebir değil, ama kanal ilişkisi/dominant renk doğru olmalı.
+            assert!((r as i32 - er as i32).abs() < 40, "r={r} beklenen={er}");
+            assert!((g as i32 - eg as i32).abs() < 40, "g={g} beklenen={eg}");
+            assert!((b as i32 - eb as i32).abs() < 40, "b={b} beklenen={eb}");
+        }
     }
 }

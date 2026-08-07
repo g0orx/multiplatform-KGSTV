@@ -1,10 +1,13 @@
-//! Canlı ses yakalama: varsayılan giriş cihazından (mikrofon/soundcard) sürekli örnek
-//! biriktirir. `cpal` üzerinden — Windows (WASAPI), Linux (ALSA), macOS (CoreAudio) dahil
-//! `wav.rs` ile aynı `f64` mono örnek formatını üretir, böylece aynı `session::decode_wav_*`
-//! fonksiyonları hem dosyadan hem canlı akıştan beslenebilir.
+//! Canlı ses yakalama (RX) ve çalma (TX): varsayılan giriş/çıkış cihazlarıyla `cpal`
+//! üzerinden — Windows (WASAPI), Linux (ALSA), macOS (CoreAudio). Giriş tarafı `wav.rs` ile
+//! aynı `f64` mono örnek formatını üretir, böylece aynı `session::decode_wav_*` fonksiyonları
+//! hem dosyadan hem canlı akıştan beslenebilir. Çıkış tarafı, `session::encode_session_audio`
+//! ile üretilmiş bir modüle edilmiş sinyali doğrudan hoparlöre/ses kartına çalar.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
@@ -106,6 +109,87 @@ impl LiveCapture {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+/// Verilen mono örnekleri (-1.0..1.0, `sample_rate` Hz) varsayılan ses çıkış cihazından çalar,
+/// çalma bitene kadar (çağıran thread'i) bloklar. `session::encode_session_audio` ile üretilen
+/// TX sinyalini doğrudan hoparlöre/ses kartına vermek için — çağıran, UI donmasın diye bunu
+/// ayrı bir thread'den çağırmalıdır.
+pub fn play_blocking(samples: &[f64], sample_rate: f64) -> Result<(), String> {
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or_else(|| "Varsayılan ses çıkış cihazı bulunamadı".to_string())?;
+
+    let want_sr = sample_rate.round() as u32;
+    let ranges: Vec<_> = device
+        .supported_output_configs()
+        .map_err(|e| format!("Çıkış yapılandırmaları alınamadı: {e}"))?
+        .collect();
+    let range = ranges
+        .iter()
+        .find(|r| r.min_sample_rate() <= want_sr && want_sr <= r.max_sample_rate())
+        .ok_or_else(|| format!("Çıkış cihazı {want_sr} Hz'i desteklemiyor"))?;
+    let supported = range.clone().with_sample_rate(want_sr);
+    let sample_format = supported.sample_format();
+    let config: cpal::StreamConfig = supported.config();
+    let channels = config.channels as usize;
+
+    let samples = Arc::new(samples.to_vec());
+    let total = samples.len();
+    let pos = Arc::new(AtomicUsize::new(0));
+    let err_fn = |e| eprintln!("[kgstv-modem::live] çıkış akışı hatası: {e}");
+
+    let stream = match sample_format {
+        cpal::SampleFormat::F32 => {
+            let samples_cb = samples.clone();
+            let pos_cb = pos.clone();
+            device
+                .build_output_stream(
+                    config.clone(),
+                    move |data: &mut [f32], _| pull_upmixed(data, channels, &samples_cb, &pos_cb, |v| v as f32),
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| format!("Çıkış akışı kurulamadı: {e}"))?
+        }
+        cpal::SampleFormat::I16 => {
+            let samples_cb = samples.clone();
+            let pos_cb = pos.clone();
+            device
+                .build_output_stream(
+                    config.clone(),
+                    move |data: &mut [i16], _| {
+                        pull_upmixed(data, channels, &samples_cb, &pos_cb, |v| (v * i16::MAX as f64) as i16)
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| format!("Çıkış akışı kurulamadı: {e}"))?
+        }
+        fmt => return Err(format!("Desteklenmeyen çıkış örnek formatı: {fmt:?}")),
+    };
+
+    stream.play().map_err(|e| format!("Çıkış akışı başlatılamadı: {e}"))?;
+    let duration = Duration::from_secs_f64(total as f64 / sample_rate + 0.3);
+    std::thread::sleep(duration);
+    Ok(())
+}
+
+fn pull_upmixed<T: Copy + Default>(
+    data: &mut [T],
+    channels: usize,
+    samples: &[f64],
+    pos: &AtomicUsize,
+    to_sample: impl Fn(f64) -> T,
+) {
+    for frame in data.chunks_mut(channels) {
+        let i = pos.fetch_add(1, Ordering::Relaxed);
+        let v = if i < samples.len() { to_sample(samples[i]) } else { T::default() };
+        for s in frame.iter_mut() {
+            *s = v;
+        }
     }
 }
 
