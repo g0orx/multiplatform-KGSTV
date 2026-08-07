@@ -36,6 +36,9 @@ const TX_SAMPLE_RATE: f64 = 44100.0;
 const LIVE_BUFFER_SECONDS: f64 = 60.0;
 /// Canlı modda kaç saniyede bir yeniden decode denemesi yapılır.
 const LIVE_REDECODE_INTERVAL: Duration = Duration::from_millis(2000);
+/// Gerçek zamanlı WAV oynatma simülasyonunda kaç saniyede bir yeniden decode denemesi yapılır
+/// (canlı mikrofondan daha sık — kayıt önceden bilindiği için daha canlı bir izleme deneyimi).
+const WAV_SIM_REDECODE_INTERVAL: Duration = Duration::from_millis(700);
 /// Göz diyagramının yeniden hesaplanma aralığı (her UI karesinde değil).
 const EYE_UPDATE_INTERVAL: Duration = Duration::from_millis(300);
 /// Göz diyagramı için kullanılan ses penceresi (son N saniye).
@@ -80,6 +83,12 @@ struct KgstvApp {
     // Canlı decode.
     live: Option<LiveCapture>,
     last_live_decode: Instant,
+
+    // Bir WAV dosyasını gerçek zamanlı hızda "oynatıyormuş gibi" besleme (anlık toplu decode
+    // yerine — hem tile'ların gerçek KG-STV hızında gelmesi hem göz diyagramının o ana kadar
+    // gelen sesi göstermesi için).
+    wav_sim: Option<kgstv_modem::PlaybackSim>,
+    last_wav_sim_decode: Instant,
 
     // Göz diyagramı: en son yüklenen/yakalanan ses (dosyadan ya da canlı tampondan, ya da
     // TX'te üretilen ses), decode edilip edilmediğine bakılmaksızın periyodik yeniden çizilir.
@@ -134,6 +143,8 @@ impl Default for KgstvApp {
             current_file: None,
             live: None,
             last_live_decode: Instant::now(),
+            wav_sim: None,
+            last_wav_sim_decode: Instant::now(),
             last_audio: None,
             last_anchor: None,
             eye_points: Vec::new(),
@@ -190,6 +201,7 @@ impl KgstvApp {
         self.reset_decode_state();
         self.decoding = true;
         self.live = None; // dosya modu canlı yakalamayı durdurur
+        self.wav_sim = None; // ve gerçek zamanlı oynatma simülasyonunu
         self.last_anchor = None; // yeni dosya için eski anchor artık geçersiz
 
         let (tx, rx): (Sender<DecodeMsg>, Receiver<DecodeMsg>) = mpsc::channel();
@@ -222,12 +234,38 @@ impl KgstvApp {
                 self.status = format!("Canlı dinleniyor @ {:.0} Hz — bekleniyor...", cap.sample_rate);
                 self.current_file = Some("(canlı giriş)".to_string());
                 self.reset_decode_state();
+                self.wav_sim = None; // canlı mod gerçek zamanlı WAV oynatmayı durdurur
                 self.live = Some(cap);
                 self.last_live_decode = Instant::now() - LIVE_REDECODE_INTERVAL; // hemen tetikle
                 let _ = ctx;
             }
             Err(e) => {
                 self.status = format!("Canlı yakalama başlatılamadı: {e}");
+            }
+        }
+    }
+
+    /// Bir WAV dosyasını, anlık toplu decode yerine, gerçek çalma süresine eşit sürede
+    /// "oynatıyormuş gibi" beslemeye başlar (bkz. `kgstv_modem::PlaybackSim`) — hem tile'ların
+    /// gerçek KG-STV hızında ekrana gelmesi hem göz diyagramının sadece o ana kadar gelen
+    /// sesi gösterebilmesi için.
+    fn start_wav_sim(&mut self, path: PathBuf) {
+        match kgstv_modem::load_mono(&path) {
+            Ok(audio) => {
+                let name = path.display().to_string();
+                self.status = format!(
+                    "Gerçek zamanlı oynatılıyor: {name} ({:.1} sn)",
+                    audio.samples.len() as f64 / audio.sample_rate
+                );
+                self.current_file = Some(name);
+                self.reset_decode_state();
+                self.live = None; // gerçek zamanlı oynatma canlı mikrofon dinlemeyi durdurur
+                self.last_anchor = None;
+                self.wav_sim = Some(kgstv_modem::PlaybackSim::start(audio.samples, audio.sample_rate));
+                self.last_wav_sim_decode = Instant::now() - WAV_SIM_REDECODE_INTERVAL; // hemen tetikle
+            }
+            Err(e) => {
+                self.status = format!("WAV okunamadı: {e}");
             }
         }
     }
@@ -256,6 +294,36 @@ impl KgstvApp {
         let ctx1 = ctx.clone();
         std::thread::spawn(move || {
             run_decode(&ctx1, &tx, "(canlı)".to_string(), sample_rate, samples);
+        });
+    }
+
+    /// `maybe_kick_live_decode` ile aynı mantık, gerçek zamanlı WAV oynatma simülasyonu için:
+    /// tampon o ana kadar oynatılmış kısımla sınırlı olduğundan hem tile'lar gerçek hızda gelir
+    /// hem göz diyagramı sadece "şu ana kadar alınan" sesi görür.
+    fn maybe_kick_wav_sim_decode(&mut self, ctx: &egui::Context) {
+        let Some(sim) = &self.wav_sim else { return };
+        if self.decoding || self.last_wav_sim_decode.elapsed() < WAV_SIM_REDECODE_INTERVAL {
+            return;
+        }
+        if sim.len() < 4096 {
+            return; // henüz anlamlı bir decode denemesi için yeterli örnek yok
+        }
+        self.last_wav_sim_decode = Instant::now();
+        let sample_rate = sim.sample_rate;
+        let samples = Arc::new(sim.snapshot());
+        let received_secs = samples.len() as f64 / sample_rate;
+        let total_secs = sim.total_len() as f64 / sample_rate;
+        self.last_audio = Some((sample_rate, samples.clone()));
+        self.last_anchor = None; // yeni anchor decode bitince gelecek
+
+        self.reset_decode_state();
+        self.decoding = true;
+        let (tx, rx): (Sender<DecodeMsg>, Receiver<DecodeMsg>) = mpsc::channel();
+        self.rx = Some(rx);
+        let ctx1 = ctx.clone();
+        let label = format!("(gerçek zamanlı, {received_secs:.1}/{total_secs:.1} sn)");
+        std::thread::spawn(move || {
+            run_decode(&ctx1, &tx, label, sample_rate, samples);
         });
     }
 
@@ -660,9 +728,11 @@ impl eframe::App for KgstvApp {
 
         let ctx = ui.ctx().clone();
         self.maybe_kick_live_decode(&ctx);
+        self.maybe_kick_wav_sim_decode(&ctx);
         self.recompute_eye_diagram();
-        if self.live.is_some() || self.tx_encoding || self.tx_playing {
-            // Canlı/kodlama/çalma sırasında düzenli aralıklarla yeniden çizim tetikle.
+        if self.live.is_some() || self.wav_sim.is_some() || self.tx_encoding || self.tx_playing {
+            // Canlı/gerçek-zamanlı-oynatma/kodlama/çalma sırasında düzenli aralıklarla yeniden
+            // çizim tetikle.
             ctx.request_repaint_after(Duration::from_millis(150));
         }
 
@@ -709,17 +779,28 @@ impl eframe::App for KgstvApp {
 
                 match self.mode {
                     Mode::Rx => {
-                        if ui
-                            .add_enabled(!self.decoding && self.live.is_none(), egui::Button::new("📂 WAV Aç..."))
-                            .clicked()
-                        {
+                        let busy = !self.decoding && self.live.is_none() && self.wav_sim.is_none();
+                        if ui.add_enabled(busy, egui::Button::new("📂 WAV Aç...")).clicked() {
                             if let Some(path) = rfd::FileDialog::new().add_filter("WAV", &["wav"]).pick_file() {
                                 self.open_file(&ctx, path);
                             }
                         }
+                        if self.wav_sim.is_some() {
+                            if ui.button("⏹ Gerçek Zamanlı Durdur").clicked() {
+                                self.wav_sim = None;
+                                self.status = "Gerçek zamanlı oynatma durduruldu.".to_string();
+                            }
+                        } else if ui
+                            .add_enabled(!self.decoding && self.live.is_none(), egui::Button::new("🐢 Gerçek Zamanlı Oynat"))
+                            .clicked()
+                        {
+                            if let Some(path) = rfd::FileDialog::new().add_filter("WAV", &["wav"]).pick_file() {
+                                self.start_wav_sim(path);
+                            }
+                        }
                         let live_label =
                             if self.live.is_some() { "⏹ Canlı Decode Durdur" } else { "🎙 Canlı Decode Başlat" };
-                        if ui.button(live_label).clicked() {
+                        if ui.add_enabled(self.wav_sim.is_none(), egui::Button::new(live_label)).clicked() {
                             self.toggle_live(&ctx);
                         }
                         if self.decoding {

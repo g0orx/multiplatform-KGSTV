@@ -5,7 +5,7 @@
 //! ile üretilmiş bir modüle edilmiş sinyali doğrudan hoparlöre/ses kartına çalar.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -109,6 +109,84 @@ impl LiveCapture {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+/// Zaten yüklenmiş bir WAV'ın örneklerini GERÇEK ZAMANLI hızda (parça parça, `sleep` ile
+/// gerçek çalma süresine eşit toplam sürede) paylaşımlı bir tampona besleyen simülatör.
+/// `LiveCapture` ile aynı arayüz şekli (`sample_rate`, `snapshot()`, `len()`) — çağıran taraf
+/// (`kgstv-gui`), gerçek mikrofon dinleme ile bir WAV dosyasını "canlıymış gibi oynatma"yı
+/// aynı ilerlemeli decode/göz-diyagramı koduyla ele alabilsin diye. Anlık (tüm dosyayı bir
+/// kerede işleyen) decode'un aksine, göz diyagramının SADECE "o ana kadar gelen" sesi
+/// görebilmesini ve tile'ların gerçek KG-STV hızında ekrana gelmesini sağlar.
+pub struct PlaybackSim {
+    pub sample_rate: f64,
+    total_len: usize,
+    buffer: Arc<Mutex<Vec<f64>>>,
+    done: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+}
+
+impl PlaybackSim {
+    /// `samples`'i `sample_rate` hızında, ~100ms'lik parçalar hâlinde beslemeye başlar
+    /// (arka plan thread'inde) ve hemen döner.
+    pub fn start(samples: Vec<f64>, sample_rate: f64) -> Self {
+        let total_len = samples.len();
+        let buffer = Arc::new(Mutex::new(Vec::with_capacity(total_len)));
+        let done = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let buf_cb = buffer.clone();
+        let done_cb = done.clone();
+        let stop_cb = stop.clone();
+        std::thread::spawn(move || {
+            let chunk_len = ((sample_rate * 0.1) as usize).max(1); // ~100ms'lik parçalar
+            let mut i = 0;
+            while i < samples.len() {
+                if stop_cb.load(Ordering::Relaxed) {
+                    return;
+                }
+                let end = (i + chunk_len).min(samples.len());
+                if let Ok(mut buf) = buf_cb.lock() {
+                    buf.extend_from_slice(&samples[i..end]);
+                }
+                i = end;
+                std::thread::sleep(Duration::from_secs_f64(chunk_len as f64 / sample_rate));
+            }
+            done_cb.store(true, Ordering::Relaxed);
+        });
+
+        PlaybackSim { sample_rate, total_len, buffer, done, stop }
+    }
+
+    /// O ana kadar "gelmiş" örneklerin bir kopyası.
+    pub fn snapshot(&self) -> Vec<f64> {
+        self.buffer.lock().unwrap().clone()
+    }
+
+    /// O ana kadar gelen örnek sayısı.
+    pub fn len(&self) -> usize {
+        self.buffer.lock().unwrap().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Dosyanın tamamı beslendi mi (oynatma bitti mi).
+    pub fn is_done(&self) -> bool {
+        self.done.load(Ordering::Relaxed)
+    }
+
+    /// Toplam örnek sayısı (dosyanın tamamı) — ilerleme göstermek için.
+    pub fn total_len(&self) -> usize {
+        self.total_len
+    }
+}
+
+impl Drop for PlaybackSim {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
     }
 }
 
@@ -251,6 +329,24 @@ fn push_downmixed<T: Copy>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playback_sim_grows_over_time_and_finishes() {
+        let sr = 4410.0; // düşük hız: testin hızlı bitmesi için (~100ms parça -> 441 örnek)
+        let samples: Vec<f64> = (0..(sr as usize) / 2).map(|i| i as f64).collect(); // 0.5 sn'lik veri
+        let sim = PlaybackSim::start(samples.clone(), sr);
+        assert_eq!(sim.total_len(), samples.len());
+        assert!(sim.is_empty());
+        assert!(!sim.is_done());
+
+        std::thread::sleep(Duration::from_millis(150));
+        let mid = sim.len();
+        assert!(mid > 0 && mid < samples.len(), "mid={mid} (0 ile {} arasında olmalı)", samples.len());
+
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(sim.is_done());
+        assert_eq!(sim.snapshot(), samples);
+    }
 
     #[test]
     fn resample_linear_preserves_low_frequency_tone() {

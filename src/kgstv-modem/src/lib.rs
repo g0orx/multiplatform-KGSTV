@@ -26,4 +26,4 @@ pub use session::{
     decode_wav_sequential, decode_wav_sequential_cb, encode_session_audio, encode_session_audio_cb,
     FrameResult,
 };
-pub use live::{play_blocking, LiveCapture};
+pub use live::{play_blocking, LiveCapture, PlaybackSim};
