@@ -83,6 +83,9 @@ struct KgstvApp {
     // Canlı decode.
     live: Option<LiveCapture>,
     last_live_decode: Instant,
+    /// Şu ana kadar UI'a uygulanmış frame sayısı — `wav_sim_frames_applied` ile aynı amaç
+    /// (bkz. `maybe_kick_live_decode`).
+    live_frames_applied: usize,
 
     // Bir WAV dosyasını gerçek zamanlı hızda "oynatıyormuş gibi" besleme (anlık toplu decode
     // yerine — hem tile'ların gerçek KG-STV hızında gelmesi hem göz diyagramının o ana kadar
@@ -150,6 +153,7 @@ impl Default for KgstvApp {
             current_file: None,
             live: None,
             last_live_decode: Instant::now(),
+            live_frames_applied: 0,
             wav_sim: None,
             last_wav_sim_decode: Instant::now(),
             wav_sim_frames_applied: 0,
@@ -245,6 +249,7 @@ impl KgstvApp {
                 self.reset_decode_state();
                 self.wav_sim = None; // canlı mod gerçek zamanlı WAV oynatmayı durdurur
                 self.live = Some(cap);
+                self.live_frames_applied = 0;
                 self.last_live_decode = Instant::now() - LIVE_REDECODE_INTERVAL; // hemen tetikle
                 let _ = ctx;
             }
@@ -281,30 +286,50 @@ impl KgstvApp {
         }
     }
 
-    /// Canlı modda periyodik olarak biriken tamponu yeniden decode etmeyi dener
-    /// (önceki decode bitmişse). Bir sonraki pas, tamponun o anki içeriğine göre baştan
-    /// senkron arar — bu yüzden görüntü/günlük her pas başında sıfırlanır.
+    /// Canlı modda periyodik olarak biriken tamponu yeniden decode etmeyi dener (önceki decode
+    /// bitmişse). `decode_wav_sequential_cb`'nin durum tutan bir API'si olmadığından her pas
+    /// tamponu baştan taramak ZORUNDA, ama bunu `maybe_kick_wav_sim_decode`'daki gibi
+    /// UI'a "sıfırdan başlıyor" gibi göstermeden (görüntü/log silinmeden, sadece önceki
+    /// pas'larda görülmemiş YENİ frame'ler uygulanarak) yapıyoruz — aksi hâlde her ~2sn'de bir
+    /// ekran karardığı/frame sayacı 0'a döndüğü izlenimi veriyordu (kullanıcı geri bildirimi).
+    ///
+    /// **İstisna:** `LiveCapture`'ın halka tamponu `LIVE_BUFFER_SECONDS` dolunca eski örnekleri
+    /// atmaya başlar — o noktadan sonra "frame index N" artık aynı sesi göstermeyebileceğinden
+    /// (tamponun başı kaymış olur), güvenli olmak için o pas'ta TAM sıfırlama yapılır.
     fn maybe_kick_live_decode(&mut self, ctx: &egui::Context) {
         let Some(live) = &self.live else { return };
         if self.decoding || self.last_live_decode.elapsed() < LIVE_REDECODE_INTERVAL {
             return;
         }
-        if live.len() < 4096 {
-            return; // henüz anlamlı bir decode denemesi için yeterli örnek yok
-        }
-        self.last_live_decode = Instant::now();
         let sample_rate = live.sample_rate;
-        let samples = Arc::new(live.snapshot());
-        self.last_audio = Some((sample_rate, samples.clone()));
-        self.last_anchor = None; // yeni anchor decode bitince gelecek — o ana kadar göz diyagramı boş kalır
+        let raw = live.snapshot();
+        // Güvenlik payı: `maybe_kick_wav_sim_decode` ile aynı gerekçe — artımlı uygulamada
+        // hiçbir frame yeniden ziyaret edilmediğinden, tamponun tam ucundaki kesilmiş bir
+        // frame'i kalıcı olarak yanlış çizme riskini önler.
+        let margin = ((0.25 * sample_rate) as usize).min(raw.len());
+        let safe_len = raw.len() - margin;
+        if safe_len < 4096 {
+            return; // henüz anlamlı bir decode denemesi için yeterli "güvenli" örnek yok
+        }
 
-        self.reset_decode_state();
+        let buffer_capacity = (LIVE_BUFFER_SECONDS * sample_rate) as usize;
+        let ring_full = raw.len() >= buffer_capacity.saturating_sub(4096);
+        if ring_full {
+            self.reset_decode_state();
+            self.live_frames_applied = 0;
+        }
+
+        self.last_live_decode = Instant::now();
+        let samples = Arc::new(raw[..safe_len].to_vec());
+        self.last_audio = Some((sample_rate, samples.clone()));
+
         self.decoding = true;
         let (tx, rx): (Sender<DecodeMsg>, Receiver<DecodeMsg>) = mpsc::channel();
         self.rx = Some(rx);
         let ctx1 = ctx.clone();
+        let skip = self.live_frames_applied;
         std::thread::spawn(move || {
-            run_decode(&ctx1, &tx, "(canlı)".to_string(), sample_rate, samples, 0);
+            run_decode(&ctx1, &tx, "(canlı)".to_string(), sample_rate, samples, skip);
         });
     }
 
@@ -630,6 +655,8 @@ impl KgstvApp {
                         // Bir sonraki pas bu kadarını sessizce atlayıp sadece yeni frame'leri
                         // uygulasın (bkz. `maybe_kick_wav_sim_decode`).
                         self.wav_sim_frames_applied = self.frames_total;
+                    } else if self.live.is_some() {
+                        self.live_frames_applied = self.frames_total;
                     }
                     self.status = format!(
                         "Tamamlandı — senkron anchor={anchor:.1} örnek, {} frame, tile: {}/{}",
