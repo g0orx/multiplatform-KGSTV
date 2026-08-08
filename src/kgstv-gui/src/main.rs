@@ -33,6 +33,15 @@ const MAX_LOG_LINES: usize = 500;
 /// TX ses üretimi için sabit örnekleme hızı (WAV kaydı ve çalma için).
 const TX_SAMPLE_RATE: f64 = 44100.0;
 
+/// Orijinal Windows KGSTV göndericisindeki "Scale" açılır listesinin BİREBİR aynısı (kullanıcı
+/// tarafından bildirildi) — 16 değer, header'ın 4-bit `sc` alanına dizideki İNDEKSİ (0-15)
+/// olarak kodlanıyor; ondalık etiketler (0.07 … 2.0) sadece kozmetik, `kgstv.ini`'deki
+/// `ImageQ` ayarının (bkz. docs/protocol_spec.md, "ImageQ=10 ... sc=10 birebir örtüşüyor")
+/// insan-okunur karşılığı. Varsayılan indeks 10 ("1.0") — `ImageQ=10`'un gerçek kayıtla
+/// çapraz doğrulanan varsayılan değeriyle aynı.
+const TX_SCALE_LABELS: [&str; 16] =
+    ["0.07", "0.08", "0.09", "0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.8", "1.0", "1.20", "1.40", "1.60", "1.80", "2.0"];
+
 /// Canlı modda tamponda tutulan azami ses süresi — bundan eskisi otomatik atılır.
 ///
 /// 60 sn olarak bırakılmıştı ama bu, tam bir 300 karolu (20×15) görüntü aktarımının süresinden
@@ -565,7 +574,7 @@ impl KgstvApp {
         let rgba = self.tx_image_rgba.clone();
         let callsign = self.tx_callsign.clone();
         let message = self.tx_message.clone();
-        let quality = self.tx_quality.clamp(1, 15);
+        let quality = self.tx_quality.min(15); // sc 4-bit alan: 0-15, tam TX_SCALE_LABELS aralığı
         let conv = self.tx_conv;
         let fsk4 = self.tx_fsk4;
         let modulation = fsk4 as u8;
@@ -1195,7 +1204,20 @@ impl eframe::App for KgstvApp {
                     ui.label("Mesaj (opsiyonel):");
                     ui.text_edit_multiline(&mut self.tx_message);
                     ui.add_space(8.0);
-                    ui.add(egui::Slider::new(&mut self.tx_quality, 1..=15).text("JPEG kalite (sc)"));
+                    // Orijinal Windows göndericisindeki "Scale" açılır listesiyle BİREBİR aynı
+                    // (bkz. `TX_SCALE_LABELS` dokümantasyonu) — kullanıcı geri bildirimiyle
+                    // düzeltildi: eskiden burada ham bir 1-15 slider vardı, gerçek programı
+                    // bilen bir kullanıcı için "scale" değerleri (0.07…2.0) anlamsız kalıyordu.
+                    ui.horizontal(|ui| {
+                        ui.label("Scale:");
+                        egui::ComboBox::from_id_salt("tx_scale")
+                            .selected_text(TX_SCALE_LABELS[self.tx_quality as usize])
+                            .show_ui(ui, |ui| {
+                                for (i, label) in TX_SCALE_LABELS.iter().enumerate() {
+                                    ui.selectable_value(&mut self.tx_quality, i as u8, *label);
+                                }
+                            });
+                    });
                     ui.checkbox(&mut self.tx_conv, "Konvolüsyonel kodlama (CONV)");
                     ui.checkbox(&mut self.tx_fsk4, "4L-FSK modülasyonu (metin+görüntü için — çağrı işareti hep MSK)");
                     ui.add_space(8.0);
