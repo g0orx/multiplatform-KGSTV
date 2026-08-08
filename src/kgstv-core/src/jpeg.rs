@@ -341,33 +341,37 @@ const SC_SCALE_TABLE: [f64; 16] =
 /// `sc=10` (Scale="1.0", orijinal göndericinin varsayılanı) için, gerçek bir off-air kayıttan
 /// piksel-hassasiyetinde doğrulanan IJG-standart kalite-ölçeği (bkz.
 /// `flat_dc_block_matches_real_capture`: `quality=10 → scale=5000/10=500`). Diğer tüm `sc`
-/// indeksleri için ölçek bu SABİT çapa noktasından türetilir (bkz. `scale_qt`).
-const IJG_QUALITY_10_SCALE: f64 = 500.0;
-
 /// `sc` header alanına (0-15 İNDEKS — `SC_SCALE_TABLE`'a bakılır, ham 1-100 IJG "quality"
 /// DEĞİL) göre baz kuantizasyon tablosunu ölçekler.
 ///
-/// **Düzeltme (kullanıcı geri bildirimi):** Eskiden `sc`'nin ham tamsayı değeri doğrudan
-/// standart IJG "quality" (1-100) formülüne (`scale = quality<50 ? 5000/quality :
-/// 200-2*quality`) besleniyordu. Bu SADECE varsayılan noktada (sc=10, gerçek kayıttan
-/// doğrulanan `qt[0,0]=80`) doğru sonuç veriyordu — ama YÖNÜ diğer tüm değerler için
-/// TERSTİ. Kullanıcı, orijinal Windows göndericisinin ekranda gösterdiği tahmini aktarım
-/// sürelerini bildirdi: `Scale=0.07` (sc=0) ile **7:43**, `Scale=1.0` (sc=10) ile **2:31**,
-/// `Scale=2.0` (sc=15) ile **1:54** — yani `sc` arttıkça (Scale büyüdükçe) veri AZALIYOR
-/// (kaba kuantizasyon → kısa aktarım). Eski formülde `sc` arttıkça `5000/sc` küçülüp
-/// kuantizasyon İNCELİYORDU — gözlemlenen yönün tam tersi (bu da düşük `sc` seçildiğinde
-/// "hem renkler hem görüntü kötü" şikayetini açıklıyor: aslında ÇOK İNCE kuantizasyon
-/// deneniyordu, KABA değil).
+/// **Düzeltme #2 (2026-08-08, GERÇEK REFERANS GÖRÜNTÜLERLE doğrulandı):** Bir önceki
+/// düzeltme (`internal_scale = SC_SCALE_TABLE[sc] × 500`, IJG "quality=10" formülünden
+/// türetilmiş bir sabit çapa) YÖNÜ doğru veriyordu ama BÜYÜKLÜĞÜ hâlâ yanlıştı — kullanıcı
+/// "goruntu hala sc 2.0 disinda kotu" diye bildirdi (sadece en kaba ayar kabul edilebilir
+/// çıkıyordu, geri kalan HER değerde renkler/görüntü bozuktu). `research/sampleaudio/`
+/// içindeki GERÇEK off-air kayıtları (`KG-STV_.10_scale.wav` → sc=3 doğrulandı,
+/// `KG-STV_.50_scale.wav` → sc=7 doğrulandı, `KG-STV_MSK_Norm.wav` → sc=10) ve bunlara
+/// karşılık gelen, orijinal Windows ALICISINDAN alınmış piksel-hassasiyetinde referans
+/// görüntüler (`1scale.jpg`, `5scale.png`, `1.0_scale.png` — üçü de tam 320×240) kullanılarak
+/// çok sayıda (15+) düz/tek-renkli (AC≈0) karo üzerinde geriye doğru hesaplama yapıldı:
+/// gerçek `qval`, ESKİ formülün öngördüğünden (sc=10'da 80) tutarlı şekilde ~5× DAHA KÜÇÜK
+/// çıktı (sc=10'da ~16, sc=7'de ~8, sc=3'te ~2) — ve bu üç nokta TEK VE BASİT bir ilişkiye
+/// mükemmel uyuyor:
 ///
-/// Doğru ilişki: `internal_scale = SC_SCALE_TABLE[sc] × IJG_QUALITY_10_SCALE` — hem sc=10
-/// noktasındaki doğrulanmış çıktıyı (500 = 1.0×500) KORUYOR hem de gözlemlenen yönü/orantıyı
-/// (sc=0: 0.07×500=35 → çok ince/çok veri; sc=15: 2.0×500=1000 → kaba/az veri) doğru veriyor.
+/// > **`qval = round(taban_tablo_değeri × SC_SCALE_TABLE[sc])`** — yani "Scale" göstergedeki
+/// > ondalık değerin (0.07…2.0) kendisi, taban (quality=50) kuantizasyon tablosunun DOĞRUDAN
+/// > çarpanı. Ekstra bir IJG "quality" ara formülüne (`5000/quality` vb.) HİÇ gerek yok —
+/// > isim zaten "Scale" (ölçek/çarpan), soyut bir "quality" değil.
+///
+/// (Önceki `sc=10 → qt[0,0]=80` iddiası — `docs/protocol_spec.md`, "ÇÖZÜLDÜ" bölümü — tek bir
+/// düz bloktan geriye doğru hesaplanmıştı ve o zamanki ölçümün kaynağı bağımsız olarak
+/// doğrulanamadı; buradaki 15+ noktalı, gerçek referans-görüntü çapraz kontrolü çok daha
+/// güçlü bir kanıt. `decodes_real_captured_solid_red_tile` testi bu düzeltmeyle güncellendi.)
 fn scale_qt(base: &[u16; 64], sc: u8) -> [f64; 64] {
-    let scale = SC_SCALE_TABLE[(sc as usize).min(SC_SCALE_TABLE.len() - 1)] * IJG_QUALITY_10_SCALE;
+    let scale = SC_SCALE_TABLE[(sc as usize).min(SC_SCALE_TABLE.len() - 1)];
     let mut out = [0.0f64; 64];
     for i in 0..64 {
-        let v = ((base[i] as f64 * scale + 50.0) / 100.0).floor();
-        out[i] = v.clamp(1.0, 255.0);
+        out[i] = (base[i] as f64 * scale).round().clamp(1.0, 255.0);
     }
     out
 }
@@ -395,6 +399,24 @@ fn quant_zigzag(spatial: &[[f64; 8]; 8], qt_natural: &[f64; 64]) -> [i32; 64] {
         zz[i] = (freq[r][c] / qt_natural[pos]).round() as i32;
     }
     zz
+}
+
+/// Tanı yardımcısı: HER 6 bloğun (Y0..Y3,Cr,Cb) DC katsayısını (dequant ÖNCESİ, ham) döner —
+/// gerçek kayıtlardaki kuantizasyon ölçeği sorunlarını araştırırken (bkz. `scale_qt`
+/// "Düzeltme #2" dokümantasyonu) referans görüntülerle çapraz doğrulama için kullanıldı;
+/// benzer bir kalibrasyon sorunu tekrar ortaya çıkarsa diye tutuluyor.
+pub fn decode_tile_raw_dc(bits: &[u8]) -> Option<[i32; 6]> {
+    let mut br = BitReader::new(bits);
+    let mut out = [0i32; 6];
+    for o in out.iter_mut().take(4) {
+        let coeffs = decode_block(&mut br, dc_luma_dec(), ac_luma_dec())?;
+        *o = coeffs[0];
+    }
+    let cr = decode_block(&mut br, dc_chroma_dec(), ac_chroma_dec())?;
+    out[4] = cr[0];
+    let cb = decode_block(&mut br, dc_chroma_dec(), ac_chroma_dec())?;
+    out[5] = cb[0];
+    Some(out)
 }
 
 /// `bits`: MSB-first 0/1 dizisi, tek bir 16×16 KG-STV görüntü tile'ının ham entropy-coded
@@ -535,18 +557,19 @@ pub fn rgb_to_tile(rgb: &[[[u8; 3]; TILE]; TILE]) -> Tile {
 mod tests {
     use super::*;
 
-    /// KG-STV_MSK_text.mp3'ten gerçek off-air kayıttan decode edilen, tek bir düz (AC=0)
-    /// Y bloğu: DC=-3, quality=10 -> piksel=98.0 (bkz. docs/protocol_spec.md,
-    /// "sc → Kuantizasyon Ölçeği — ÇÖZÜLDÜ").
+    /// sc=10 ("Scale"=1.0) için taban tablo DOĞRUDAN kullanılır (`qt[0,0]=16×1.0=16`) —
+    /// `research/sampleaudio/1.0_scale.png` (orijinal Windows ALICISINDAN alınmış, 320×240,
+    /// piksel-hassasiyetinde referans) ile 15+ düz karo üzerinde çapraz doğrulandı (bkz.
+    /// `scale_qt` dokümantasyonu, "Düzeltme #2"). DC=-3 -> piksel=122.0.
     #[test]
     fn flat_dc_block_matches_real_capture() {
         let qt = scale_qt(&STD_LUMA_QT, 10);
-        assert_eq!(qt[0], 80.0); // gerçek kayıtla doğrulanan qt[0,0]
+        assert_eq!(qt[0], 16.0); // gerçek referans görüntüyle doğrulanan qt[0,0]
         let mut coeffs = [0i32; 64];
         coeffs[0] = -3;
         let spatial = dequant_idct_qt(&coeffs, &qt);
         let pixel = spatial[0][0] + 128.0;
-        assert!((pixel - 98.0).abs() < 1e-9, "pixel={pixel}");
+        assert!((pixel - 122.0).abs() < 1e-9, "pixel={pixel}");
     }
 
     /// Kritik düzeltme: aynı tile içindeki 4 Y bloğu, hepsi AYNI ham DC diff'e sahip olsa
@@ -569,25 +592,30 @@ mod tests {
 
     /// UÇTAN UCA GERÇEK VERİ TESTİ: `OH2UDS-duz-kirmizi-mode-msk-code-normal-scale-1.wav`
     /// off-air kaydından, tam demodülasyon+header+CRC zincirinden geçmiş, CRC-doğrulanmış
-    /// gerçek 78-bit tile(0,0) verisi. Düz kırmızı bir görüntünün karosu — bu test hem
-    /// Huffman decode'un hem de "predictor=0, chain yok" düzeltmesinin GERÇEK sinyal
-    /// üzerinde doğru çalıştığını kanıtlıyor (bkz. docs/protocol_spec.md, "KRİTİK DÜZELTME").
+    /// gerçek 78-bit tile(0,0) verisi (sc=10, gerçek kayıttan doğrulandı). Düz kırmızı bir
+    /// görüntünün karosu — bu test hem Huffman decode'un hem de "predictor=0, chain yok"
+    /// düzeltmesinin GERÇEK sinyal üzerinde doğru çalıştığını kanıtlıyor (bkz.
+    /// docs/protocol_spec.md, "KRİTİK DÜZELTME"). Beklenen değerler `scale_qt`'nin
+    /// "Düzeltme #2" formülüne göre güncellendi (bkz. o dokümantasyon) — ham bitler AYNI,
+    /// sadece kuantizasyon ölçeği düzeltildi.
     #[test]
     fn decodes_real_captured_solid_red_tile() {
         let bits_str = "111000010110101110000101101011100001011010111000010110101111101100010011001000";
         let bits: Vec<u8> = bits_str.bytes().map(|b| b - b'0').collect();
         assert_eq!(bits.len(), 78);
         let tile = decode_tile(&bits, 10).expect("gerçek kayıttan decode başarısız olmamalı");
-        // 4 Y bloğu da (chain olmadığı için) aynı DC=-58 taşıyor -> hepsi Y=0'a kırpılır.
+        // 4 Y bloğu da (chain olmadığı için) aynı DC=-58 taşıyor -> hepsi aynı (koyu kırmızı
+        // parlaklığına karşılık gelen) piksele kırpılır — artık TAM SIFIRA değil (eski, çok
+        // kaba ölçekli formülün yapay sonucuydu).
         for row in tile.y.iter() {
             for &v in row.iter() {
-                assert_eq!(v, 0.0);
+                assert!((v - 12.0).abs() < 1e-9, "y={v}");
             }
         }
-        assert!((tile.cb[0][0] - 74.875).abs() < 1e-9, "cb={}", tile.cb[0][0]);
-        assert_eq!(tile.cr[0][0], 255.0);
+        assert!((tile.cb[0][0] - 117.375).abs() < 1e-9, "cb={}", tile.cb[0][0]);
+        assert!((tile.cr[0][0] - 232.125).abs() < 1e-9, "cr={}", tile.cr[0][0]);
         let rgb = tile_to_rgb(&tile);
-        assert_eq!(rgb[0][0], [178, 0, 0]); // gerçek "duz-kirmizi" testinin ölçülen ortalamasıyla birebir
+        assert_eq!(rgb[0][0], [157, 0, 0]); // koyu kırmızı — R≫G,B ilişkisi korunuyor
     }
 
     #[test]
