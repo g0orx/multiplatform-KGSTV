@@ -6,7 +6,11 @@
 //! - **Kritik**: bu 6 bloğun DC değerleri standart JPEG'in aksine BİRBİRİNE ZİNCİRLENMEZ —
 //!   her biri kendi başına, predictor=0 ile kodlanır (bkz. docs/protocol_spec.md, "KRİTİK
 //!   DÜZELTME" bölümü). Bu codec o bulguyu baştan doğru uyguluyor.
-//! - Kuantizasyon: standart IJG "quality" formülü, `sc` header alanı doğrudan quality (1-100).
+//! - Kuantizasyon: standart IJG kalite-ölçekleme formülü, ama `sc` header alanı (4 bit, 0-15)
+//!   ham "quality" (1-100) DEĞİL — orijinal göndericinin "Scale" açılır listesindeki 16 ondalık
+//!   değere (0.07…2.0) bir İNDEKS; ölçek bu değerin doğrudan çarpanı olarak hesaplanıyor
+//!   (bkz. `scale_qt` dokümantasyonu — kullanıcının gerçek programdan bildirdiği aktarım
+//!   süreleriyle doğrulandı).
 //! - 4:2:0-eşdeğeri chroma altörnekleme (KG-STV'nin "4:1:1" dediği), tek Cb+Cr 8×8 blok
 //!   16×16'lık tüm tile'ı kapsar.
 //! - Bitstream marker'sız, byte-hizasız — sadece ham entropy-coded veri + 16-bit CRC (bkz. frame.rs).
@@ -327,11 +331,39 @@ fn fdct8(spatial: &[[f64; 8]; 8]) -> [[f64; 8]; 8] {
     out
 }
 
-/// Standart IJG kalite-ölçekleme formülü. `quality`: 1-100 (KG-STV'de header'ın `sc` alanı
-/// doğrudan bu değerdir — bkz. docs/protocol_spec.md).
-fn scale_qt(base: &[u16; 64], quality: u8) -> [f64; 64] {
-    let q = quality.clamp(1, 100) as f64;
-    let scale = if q < 50.0 { 5000.0 / q } else { 200.0 - 2.0 * q };
+/// Orijinal Windows KGSTV göndericisinin "Scale" açılır listesindeki 16 değerin BİREBİR
+/// aynısı (kullanıcı tarafından bildirildi; bkz. `kgstv-gui::TX_SCALE_LABELS` — iki dizi
+/// senkron tutulmalı). Header'ın 4-bit `sc` alanına bu dizinin İNDEKSİ (0-15) yazılıyor;
+/// ondalık değerler kuantizasyon ölçeğini DOĞRUDAN çarpan olarak belirliyor (bkz. `scale_qt`).
+const SC_SCALE_TABLE: [f64; 16] =
+    [0.07, 0.08, 0.09, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.20, 1.40, 1.60, 1.80, 2.0];
+
+/// `sc=10` (Scale="1.0", orijinal göndericinin varsayılanı) için, gerçek bir off-air kayıttan
+/// piksel-hassasiyetinde doğrulanan IJG-standart kalite-ölçeği (bkz.
+/// `flat_dc_block_matches_real_capture`: `quality=10 → scale=5000/10=500`). Diğer tüm `sc`
+/// indeksleri için ölçek bu SABİT çapa noktasından türetilir (bkz. `scale_qt`).
+const IJG_QUALITY_10_SCALE: f64 = 500.0;
+
+/// `sc` header alanına (0-15 İNDEKS — `SC_SCALE_TABLE`'a bakılır, ham 1-100 IJG "quality"
+/// DEĞİL) göre baz kuantizasyon tablosunu ölçekler.
+///
+/// **Düzeltme (kullanıcı geri bildirimi):** Eskiden `sc`'nin ham tamsayı değeri doğrudan
+/// standart IJG "quality" (1-100) formülüne (`scale = quality<50 ? 5000/quality :
+/// 200-2*quality`) besleniyordu. Bu SADECE varsayılan noktada (sc=10, gerçek kayıttan
+/// doğrulanan `qt[0,0]=80`) doğru sonuç veriyordu — ama YÖNÜ diğer tüm değerler için
+/// TERSTİ. Kullanıcı, orijinal Windows göndericisinin ekranda gösterdiği tahmini aktarım
+/// sürelerini bildirdi: `Scale=0.07` (sc=0) ile **7:43**, `Scale=1.0` (sc=10) ile **2:31**,
+/// `Scale=2.0` (sc=15) ile **1:54** — yani `sc` arttıkça (Scale büyüdükçe) veri AZALIYOR
+/// (kaba kuantizasyon → kısa aktarım). Eski formülde `sc` arttıkça `5000/sc` küçülüp
+/// kuantizasyon İNCELİYORDU — gözlemlenen yönün tam tersi (bu da düşük `sc` seçildiğinde
+/// "hem renkler hem görüntü kötü" şikayetini açıklıyor: aslında ÇOK İNCE kuantizasyon
+/// deneniyordu, KABA değil).
+///
+/// Doğru ilişki: `internal_scale = SC_SCALE_TABLE[sc] × IJG_QUALITY_10_SCALE` — hem sc=10
+/// noktasındaki doğrulanmış çıktıyı (500 = 1.0×500) KORUYOR hem de gözlemlenen yönü/orantıyı
+/// (sc=0: 0.07×500=35 → çok ince/çok veri; sc=15: 2.0×500=1000 → kaba/az veri) doğru veriyor.
+fn scale_qt(base: &[u16; 64], sc: u8) -> [f64; 64] {
+    let scale = SC_SCALE_TABLE[(sc as usize).min(SC_SCALE_TABLE.len() - 1)] * IJG_QUALITY_10_SCALE;
     let mut out = [0.0f64; 64];
     for i in 0..64 {
         let v = ((base[i] as f64 * scale + 50.0) / 100.0).floor();
@@ -561,10 +593,12 @@ mod tests {
     #[test]
     fn encode_decode_roundtrip_solid_color() {
         // Düz kırmızı (255,0,0) 16x16 tile — gerçek OH2UDS testiyle aynı ruhta.
+        // sc=10 ("Scale"=1.0): gerçek göndericinin varsayılanı, `sc` artık 0-15 İNDEKS
+        // olduğundan (bkz. `scale_qt`) eskiden kullanılan 50 geçersiz bir değerdi.
         let rgb = [[[255u8, 0, 0]; TILE]; TILE];
         let tile_in = rgb_to_tile(&rgb);
-        let bits = encode_tile(&tile_in, 50); // orta kalite, aşırı kırpmayı önlemek için
-        let tile_out = decode_tile(&bits, 50).expect("decode başarısız");
+        let bits = encode_tile(&tile_in, 10);
+        let tile_out = decode_tile(&bits, 10).expect("decode başarısız");
         let rgb_out = tile_to_rgb(&tile_out);
         // Merkezi bir piksel makul ölçüde kırmızıya yakın olmalı (JPEG kayıplı olduğu için
         // birebir eşleşme beklenmez, ama kanal ilişkisi doğru olmalı: R >> G,B).
@@ -578,8 +612,8 @@ mod tests {
     fn encode_decode_roundtrip_solid_white() {
         let rgb = [[[255u8, 255, 255]; TILE]; TILE];
         let tile_in = rgb_to_tile(&rgb);
-        let bits = encode_tile(&tile_in, 50);
-        let tile_out = decode_tile(&bits, 50).expect("decode başarısız");
+        let bits = encode_tile(&tile_in, 10); // sc=10 ("Scale"=1.0, varsayılan) — bkz. yukarıdaki not
+        let tile_out = decode_tile(&bits, 10).expect("decode başarısız");
         let rgb_out = tile_to_rgb(&tile_out);
         for row in rgb_out.iter() {
             for px in row.iter() {

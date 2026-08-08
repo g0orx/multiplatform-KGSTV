@@ -320,6 +320,44 @@ gösteriyor (örn. yatay bantlama — bir fotoğraftaki yatay kenar/gradyanla ta
 biliniyor. Görüntü katmanında kalan tek şey, üretim kalitesinde bir Rust implementasyonu yazmak
 — bilinmeyen bir parametre yok.
 
+#### ⚠️ DÜZELTME (2026-08-08) — `sc`, ham IJG "quality" değil, göndericinin "Scale" listesine bir İNDEKS
+
+Yukarıdaki analiz TEK bir noktada (`sc=10`) doğrulanmıştı ve doğruydu, ama YANLIŞ genellenmişti.
+Kullanıcı, orijinal Windows göndericisinde `sc` alanına karşılık gelen kontrolün ham bir
+"quality 1-100" değeri DEĞİL, 16 seçenekli bir **"Scale" açılır listesi** olduğunu bildirdi:
+
+```
+0.07  0.08  0.09  0.1  0.2  0.3  0.4  0.5  0.6  0.8  1.0  1.20  1.40  1.60  1.80  2.0
+```
+
+(16 değer = `sc`'nin 4-bit uzayı, index 10 = "1.0" = varsayılan, `ImageQ=10` ile birebir örtüşüyor
+— yukarıdaki `sc=10` doğrulamasıyla TUTARLI, ama SADECE o tek nokta için.) Kullanıcı ayrıca
+gerçek göndericinin ekranda gösterdiği tahmini aktarım sürelerini bildirdi:
+
+| Scale (GUI) | `sc` (index) | Gösterilen süre |
+|---|---|---|
+| 0.07 | 0 | **7:43** |
+| 1.0 | 10 | **2:31** |
+| 2.0 | 15 | **1:54** |
+
+Yani `sc` arttıkça (Scale büyüdükçe) veri AZALIYOR (kaba kuantizasyon → kısa aktarım). Eski
+formülde (`quality=sc` doğrudan `5000/quality`'e besleniyordu) `sc` arttıkça kuantizasyon
+İNCELİYORDU — gözlemlenen yönün TAM TERSİ (ve "düşük sc'de hem renk hem görüntü kötü"
+şikâyetini açıklıyor: aslında ÇOK İNCE kuantizasyon deneniyordu, KABA değil).
+
+**Düzeltilmiş ilişki** (bkz. `kgstv-core/src/jpeg.rs::scale_qt`):
+
+> `internal_scale = SCALE_TABLE[sc] × 500.0` (500 = `sc=10`/"1.0" noktasındaki doğrulanmış IJG
+> ölçeği — `5000/10=500` ile aynı sabit, ama artık ham `quality` üzerinden DEĞİL, tablo
+> değerinin doğrudan çarpanı olarak kullanılıyor); `qval = clamp(floor((base×internal_scale+50)/100), 1, 255)`.
+
+Bu hem `sc=10` noktasındaki doğrulanmış çıktıyı (500=1.0×500) KORUYOR hem de gözlemlenen
+yönü/orantıyı doğru veriyor — kendi encoder'ımızla ölçülen (gürültülü/en-kötü-durum içerikle)
+aktarım süreleri artık aynı trendi gösteriyor: sc=0→6'48", sc=10→1'42", sc=15→1'19" (mutlak
+değerler farklı görüntü içeriğinden dolayı birebir eşleşmiyor, ama yön ve büyüklük mertebesi
+tutarlı). `SCALE_TABLE`'ın (0.07…2.0) kendisinin kgstv.exe içinde nerede/nasıl saklandığı henüz
+binary analizle doğrulanmadı — şimdilik kullanıcı bildirimine güveniliyor.
+
 ### ✅ `kgstv-modem` (Rust ses I/O + MSK modem) — Gerçek Kayıtla Uçtan Uca Doğrulandı (2026-08-07)
 
 `src/kgstv-modem/` cargo workspace üyesi olarak yazıldı: `wav` (hound tabanlı WAV I/O, örnekleme
