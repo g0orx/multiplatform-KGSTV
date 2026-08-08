@@ -15,7 +15,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -793,7 +793,35 @@ impl KgstvApp {
         // checker), bu yüzden bayrağı SADECE burada topluyoruz, döngü bitince (ödünç serbest
         // kalınca) aşağıda uyguluyoruz.
         let mut should_auto_play = false;
-        while let Ok(msg) = rx.try_recv() {
+        loop {
+            let msg = match rx.try_recv() {
+                Ok(msg) => msg,
+                Err(TryRecvError::Empty) => break,
+                // Kritik düzeltme (kullanıcı geri bildirimi: "gonderiyor amaa bazen de
+                // gondermiyom, yeniden yeniden denedigim de gonderebiliyorum"): arka plan
+                // kodlama/çalma thread'i (ör. beklenmedik bir ses cihazı hatasıyla) PANİK
+                // yiyip hiçbir son mesaj göndermeden ölürse, kanal "Disconnected" olur —
+                // eskiden bu durum `Empty` ile AYNI şekilde (sessizce döngüden çıkarak)
+                // ele alınıyordu, yani `tx_encoding`/`tx_playing` SONSUZA DEK `true` kalıp
+                // "Kodlanıyor.../Çalınıyor..." ekranda takılı kalıyor, "📨 Gönder"/"🔊 Çal"
+                // butonları kalıcı olarak devre dışı kalıyordu (kullanıcı bunu fark
+                // etmeden tekrar tekrar deneyip, muhtemelen arada uygulamayı yeniden
+                // başlatana kadar "göndermiyor" gibi görünüyordu). Artık bağlantı kopunca
+                // hâlâ meşgul görünen durum bayrakları HEMEN sıfırlanıp bir hata mesajı
+                // gösteriliyor — kullanıcı arayüzü yeniden başlatmadan tekrar deneyebilir.
+                Err(TryRecvError::Disconnected) => {
+                    if self.tx_encoding || self.tx_playing {
+                        self.tx_encoding = false;
+                        self.tx_playing = false;
+                        self.tx_play_started = None;
+                        self.tx_play_stop = None;
+                        self.tx_auto_play_after_encode = false;
+                        self.tx_status =
+                            "Hata: arka plan işlemi beklenmedik şekilde durdu (tekrar deneyebilirsin).".to_string();
+                    }
+                    break;
+                }
+            };
             match msg {
                 TxMsg::Progress { done, total } => {
                     self.tx_progress = (done, total);
@@ -844,7 +872,21 @@ impl KgstvApp {
 
     fn drain_messages(&mut self) {
         let Some(rx) = &self.rx else { return };
-        while let Ok(msg) = rx.try_recv() {
+        loop {
+            let msg = match rx.try_recv() {
+                Ok(msg) => msg,
+                Err(TryRecvError::Empty) => break,
+                // Bkz. `drain_tx_messages`'taki aynı düzeltmenin dokümantasyonu — decode
+                // thread'i son bir mesaj göndermeden ölürse (panik vb.), `self.decoding`
+                // sonsuza dek `true` kalıp arayüzü kilitli göstermesin diye.
+                Err(TryRecvError::Disconnected) => {
+                    if self.decoding {
+                        self.decoding = false;
+                        self.status = "Hata: decode işlemi beklenmedik şekilde durdu (tekrar deneyebilirsin).".to_string();
+                    }
+                    break;
+                }
+            };
             match msg {
                 DecodeMsg::AudioReady { sample_rate, samples } => {
                     self.last_audio = Some((sample_rate, samples));
