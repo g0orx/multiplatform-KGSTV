@@ -86,6 +86,10 @@ struct KgstvApp {
     tiles_total: usize,
     frames_total: usize,
     current_file: Option<String>,
+    /// En son CRC-doğrulanmış çağrı işareti/metin — log satırları sadece frame metadatası
+    /// gösterdiğinden (ham metni değil), bunlar log panelinde ayrıca/belirgin gösteriliyor.
+    last_callsign: Option<String>,
+    last_text: Option<String>,
 
     // Canlı decode.
     live: Option<LiveCapture>,
@@ -158,6 +162,8 @@ impl Default for KgstvApp {
             tiles_total: 0,
             frames_total: 0,
             current_file: None,
+            last_callsign: None,
+            last_text: None,
             live: None,
             last_live_decode: Instant::now(),
             live_frames_applied: 0,
@@ -205,6 +211,8 @@ impl KgstvApp {
         self.tiles_ok = 0;
         self.tiles_total = 0;
         self.frames_total = 0;
+        self.last_callsign = None;
+        self.last_text = None;
         for px in self.image_rgba.chunks_exact_mut(4) {
             px[0] = 40;
             px[1] = 40;
@@ -439,6 +447,45 @@ impl KgstvApp {
             let phase = ((abs_t - anchor) / tb).rem_euclid(1.0) as f32;
             points.push((phase, m));
         }
+
+        // Otomatik ortalama: `anchor`'da MSK'nin kendi (incoherent) bit kararı için önemsiz
+        // ama göz diyagramının fazını kaydırabilen küçük bir sistematik ofset olabilir
+        // (kullanıcı geri bildirimi: "eye diyagram ... tam ortalanmamış sağlı sollu"). Gözün
+        // en AÇIK (frekansın en durağan/en düşük varyanslı) noktasını bulup onu faz=0.5'e
+        // hizalayarak diyagram, anchor'daki küçük hatalardan bağımsız her zaman ortalanmış
+        // görünüyor.
+        if !points.is_empty() {
+            const N_BINS: usize = 24;
+            let mut sum = [0.0f64; N_BINS];
+            let mut sum_sq = [0.0f64; N_BINS];
+            let mut count = [0usize; N_BINS];
+            for &(phase, m) in &points {
+                let idx = ((phase * N_BINS as f32) as usize).min(N_BINS - 1);
+                sum[idx] += m as f64;
+                sum_sq[idx] += (m as f64) * (m as f64);
+                count[idx] += 1;
+            }
+            let mut best_bin = None;
+            let mut best_var = f64::INFINITY;
+            for i in 0..N_BINS {
+                if count[i] < 4 {
+                    continue;
+                }
+                let mean = sum[i] / count[i] as f64;
+                let var = sum_sq[i] / count[i] as f64 - mean * mean;
+                if var < best_var {
+                    best_var = var;
+                    best_bin = Some(i);
+                }
+            }
+            if let Some(bin) = best_bin {
+                let best_phase = (bin as f32 + 0.5) / N_BINS as f32;
+                let shift = 0.5 - best_phase;
+                for p in points.iter_mut() {
+                    p.0 = (p.0 + shift).rem_euclid(1.0);
+                }
+            }
+        }
         self.eye_points = points;
     }
 
@@ -629,6 +676,27 @@ impl KgstvApp {
                     if self.log_lines.len() > MAX_LOG_LINES {
                         self.log_lines.remove(0);
                     }
+                    // Log satırı sadece frame metadatasını (x/y/sc/boyut) gösteriyor — çağrı
+                    // işareti/metin frame'lerinin GERÇEK içeriğini (ham metnini) ayrıca decode
+                    // edip hem log'a hem üstteki belirgin özet alanına yazıyoruz (aksi hâlde
+                    // "Some(Callsign)" görünüp içerik hiç ortaya çıkmıyordu — kullanıcı geri
+                    // bildirimi: "cagri isaretini cozemiyor").
+                    if fr.data_crc_ok {
+                        if let Some(data_bits) = &fr.data_bits {
+                            let text = bits_to_ascii(data_bits);
+                            match cmd {
+                                Some(Command::Callsign) => {
+                                    self.log_lines.push(format!("      → ÇAĞRI İŞARETİ: {text}"));
+                                    self.last_callsign = Some(text);
+                                }
+                                Some(Command::Text) => {
+                                    self.log_lines.push(format!("      → METİN: {text}"));
+                                    self.last_text = Some(text);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                     if cmd == Some(Command::Image) {
                         self.tiles_total += 1;
                         if let Some(data_bits) = &fr.data_bits {
@@ -727,6 +795,23 @@ fn ascii_to_bits(s: &str) -> Vec<u8> {
         }
     }
     bits
+}
+
+/// MSB-first bit dizisini ASCII metne çevirir (`ascii_to_bits`'in tersi) — çağrı işareti/metin
+/// frame'lerinin ham verisini okunabilir hâle getirmek için. Yazdırılamayan baytlar `.` ile
+/// gösterilir (Shift-JIS gibi çok baytlı kodlamalar olası ama şimdilik düz ASCII varsayılıyor).
+fn bits_to_ascii(bits: &[u8]) -> String {
+    bits.chunks(8)
+        .filter(|c| c.len() == 8)
+        .map(|c| {
+            let byte = c.iter().fold(0u8, |acc, &b| (acc << 1) | (b & 1));
+            if byte.is_ascii_graphic() || byte == b' ' {
+                byte as char
+            } else {
+                '.'
+            }
+        })
+        .collect()
 }
 
 /// `rgba` (320×240 RGBA8, satır-major) içinden `(tx,ty)` tile indeksindeki 16×16 RGB bloğunu
@@ -951,6 +1036,16 @@ impl eframe::App for KgstvApp {
                         "Frame: {}   Tile: {}/{}",
                         self.frames_total, self.tiles_ok, self.tiles_total
                     ));
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "📻 Çağrı işareti: {}",
+                            self.last_callsign.as_deref().unwrap_or("(henüz yok)")
+                        ))
+                        .strong(),
+                    );
+                    if let Some(text) = &self.last_text {
+                        ui.label(egui::RichText::new(format!("💬 Metin: {text}")).strong());
+                    }
                     ui.separator();
                     egui::ScrollArea::vertical().auto_shrink([false, false]).stick_to_bottom(true).show(
                         ui,
