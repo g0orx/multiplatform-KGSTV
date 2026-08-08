@@ -12,10 +12,11 @@
 //! (eye diagram) gösterir. Tek kod tabanı — Windows/Linux/macOS'ta native pencere olarak
 //! derlenir (egui/eframe).
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
@@ -91,7 +92,10 @@ enum DecodeMsg {
 
 enum TxMsg {
     Progress { done: usize, total: usize },
-    Done { sample_rate: f64, samples: Arc<Vec<f64>> },
+    /// `frame_bounds`: her frame için `(com, x, y, o_ana_kadarki_kümülatif_örnek_sayısı)` —
+    /// çalma sırasında "şu ana kadar hangi tile'lar gönderildi" hesaplamak için (bkz.
+    /// `tx_sent_up_to_elapsed`).
+    Done { sample_rate: f64, samples: Arc<Vec<f64>>, frame_bounds: Arc<Vec<(u8, u8, u8, usize)>> },
     PlaybackDone,
     PlaybackError(String),
 }
@@ -193,6 +197,16 @@ struct KgstvApp {
     /// Şu an çalınan sesi erken kesmek için — bkz. `play_tx`/`stop_tx_playback` (kullanıcı
     /// isteği: "gondermede cal adimini durdurabilecegim bir buton").
     tx_play_stop: Option<Arc<AtomicBool>>,
+    /// Her frame'in kümülatif bitiş örnek konumu (bkz. `TxMsg::Done`) — çalma sırasında hangi
+    /// tile'ların gönderilmiş olduğunu (`tx_sent_up_to_elapsed`) hesaplamak için.
+    tx_frame_bounds: Arc<Vec<(u8, u8, u8, usize)>>,
+    /// Çalmanın başladığı an — ilerleme çubuğu ve tile işaretlemesi için geçen süreyi
+    /// hesaplamakta kullanılır (örnek-hassas takip yerine — `play_blocking` cihaz yeniden
+    /// örnekleme yapabildiğinden örnek sayısı zamanla birebir eşleşmeyebilir, ama süre eşleşir).
+    tx_play_started: Option<Instant>,
+    /// "📤 Gönder" butonu: kodlama bitince otomatik olarak çalmayı da başlatır (kullanıcı
+    /// isteği: "butona basinca hem kodlama yapsin hem de calsin").
+    tx_auto_play_after_encode: bool,
     tx_rx: Option<Receiver<TxMsg>>,
 }
 
@@ -266,6 +280,9 @@ impl Default for KgstvApp {
             tx_audio: None,
             tx_playing: false,
             tx_play_stop: None,
+            tx_frame_bounds: Arc::new(Vec::new()),
+            tx_play_started: None,
+            tx_auto_play_after_encode: false,
             tx_rx: None,
         }
     }
@@ -669,11 +686,27 @@ impl KgstvApp {
                 }
             }
 
+            // Her frame'in kümülatif bitiş örnek konumunu topla — çalma sırasında "şu ana kadar
+            // hangi tile'lar gönderildi"yi hesaplamak için (bkz. `TxMsg::Done` dokümantasyonu).
+            let cum_positions = Arc::new(Mutex::new(Vec::with_capacity(frames.len())));
+            let cum_positions_cb = cum_positions.clone();
             let tx2 = tx.clone();
-            let samples = kgstv_modem::encode_session_audio_cb(&frames, TX_SAMPLE_RATE, move |done, total| {
-                let _ = tx2.send(TxMsg::Progress { done, total });
+            let samples =
+                kgstv_modem::encode_session_audio_cb(&frames, TX_SAMPLE_RATE, move |done, total, cum_len| {
+                    let _ = tx2.send(TxMsg::Progress { done, total });
+                    cum_positions_cb.lock().unwrap().push(cum_len);
+                });
+            let cum_positions = cum_positions.lock().unwrap().clone();
+            let frame_bounds: Vec<(u8, u8, u8, usize)> = frames
+                .iter()
+                .zip(cum_positions.iter())
+                .map(|((hdr, _), &end)| (hdr.com, hdr.x, hdr.y, end))
+                .collect();
+            let _ = tx.send(TxMsg::Done {
+                sample_rate: TX_SAMPLE_RATE,
+                samples: Arc::new(samples),
+                frame_bounds: Arc::new(frame_bounds),
             });
-            let _ = tx.send(TxMsg::Done { sample_rate: TX_SAMPLE_RATE, samples: Arc::new(samples) });
             ctx1.request_repaint();
         });
     }
@@ -697,6 +730,7 @@ impl KgstvApp {
         }
         self.tx_playing = true;
         self.tx_status = "Çalınıyor...".to_string();
+        self.tx_play_started = Some(Instant::now());
         let stop = Arc::new(AtomicBool::new(false));
         self.tx_play_stop = Some(stop.clone());
         let (tx, rx) = mpsc::channel();
@@ -724,15 +758,42 @@ impl KgstvApp {
         }
     }
 
-    fn drain_tx_messages(&mut self) {
+    /// Çalma başladığından beri geçen SÜREYE göre (örnek-hassas takip yerine — `play_blocking`
+    /// cihaz gerektirdiğinde yeniden örnekleme yapabildiğinden gerçek örnek sayısı birebir
+    /// eşleşmeyebilir, ama süre eşleşir), TX önizlemesinde şu ana kadar GÖNDERİLMİŞ tile'ların
+    /// (x,y) kümesini döner — sadece ÇALARKEN anlamlı, aksi hâlde boş küme (kullanıcı isteği:
+    /// "resimde gonderilen kismi isaretlesek").
+    fn tx_tiles_sent_so_far(&self) -> HashSet<(u8, u8)> {
+        let mut out = HashSet::new();
+        if !self.tx_playing {
+            return out;
+        }
+        let (Some(started), Some((sr, _))) = (self.tx_play_started, &self.tx_audio) else {
+            return out;
+        };
+        let elapsed_samples = (started.elapsed().as_secs_f64() * sr) as usize;
+        for &(com, x, y, end_sample) in self.tx_frame_bounds.iter() {
+            if com == Command::Image as u8 && end_sample <= elapsed_samples {
+                out.insert((x, y));
+            }
+        }
+        out
+    }
+
+    fn drain_tx_messages(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.tx_rx else { return };
+        // "📨 Gönder" butonu: kodlama bitince çalmayı da otomatik başlatmak için — `self.tx_rx`
+        // ödünç alınmışken `&mut self` gerektiren `play_tx`'i doğrudan çağıramayız (borrow
+        // checker), bu yüzden bayrağı SADECE burada topluyoruz, döngü bitince (ödünç serbest
+        // kalınca) aşağıda uyguluyoruz.
+        let mut should_auto_play = false;
         while let Ok(msg) = rx.try_recv() {
             match msg {
                 TxMsg::Progress { done, total } => {
                     self.tx_progress = (done, total);
                     self.tx_status = format!("Kodlanıyor... {done}/{total} frame");
                 }
-                TxMsg::Done { sample_rate, samples } => {
+                TxMsg::Done { sample_rate, samples, frame_bounds } => {
                     self.tx_encoding = false;
                     self.tx_status = format!(
                         "Hazır — {:.1} sn ses ({} örnek @ {sample_rate:.0} Hz)",
@@ -744,9 +805,15 @@ impl KgstvApp {
                     // (bkz. encode_session_audio_cb) — anchor=0.0 tam olarak doğru.
                     self.last_anchor = Some(0.0);
                     self.tx_audio = Some((sample_rate, samples));
+                    self.tx_frame_bounds = frame_bounds;
+                    if self.tx_auto_play_after_encode {
+                        self.tx_auto_play_after_encode = false;
+                        should_auto_play = true;
+                    }
                 }
                 TxMsg::PlaybackDone => {
                     self.tx_playing = false;
+                    self.tx_play_started = None;
                     // Kullanıcı "Durdur"a bastıysa `play_blocking` de erken `Ok(())` ile döner
                     // (bkz. o fonksiyonun dokümantasyonu) — bayrağa bakıp doğru mesajı göster.
                     let stopped_by_user =
@@ -757,10 +824,15 @@ impl KgstvApp {
                 }
                 TxMsg::PlaybackError(e) => {
                     self.tx_playing = false;
+                    self.tx_play_started = None;
                     self.tx_play_stop = None;
+                    self.tx_auto_play_after_encode = false;
                     self.tx_status = format!("Çalma hatası: {e}");
                 }
             }
+        }
+        if should_auto_play {
+            self.play_tx(ctx);
         }
     }
 
@@ -1079,10 +1151,10 @@ fn paint_eye_diagram(ui: &mut egui::Ui, rect: egui::Rect, points: &[(f32, f32)])
 
 impl eframe::App for KgstvApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.drain_messages();
-        self.drain_tx_messages();
-
         let ctx = ui.ctx().clone();
+        self.drain_messages();
+        self.drain_tx_messages(&ctx);
+
         self.maybe_kick_live_decode(&ctx);
         self.maybe_kick_wav_sim_decode(&ctx);
         self.recompute_eye_diagram();
@@ -1281,6 +1353,16 @@ impl eframe::App for KgstvApp {
                     ui.text_edit_singleline(&mut self.tx_callsign);
                     ui.label("Mesaj (opsiyonel):");
                     ui.text_edit_multiline(&mut self.tx_message);
+                    // Kullanıcı isteği: "text ekraninin yanina gonder diye bir buton ekle..
+                    // butona basinca hem kodlama yapsin hem de calsin" — üstteki "⚙ Kodla" +
+                    // "🔊 Çal" ikilisini TEK adıma indiren kısayol.
+                    if ui
+                        .add_enabled(!self.tx_encoding && !self.tx_playing, egui::Button::new("📨 Gönder"))
+                        .clicked()
+                    {
+                        self.tx_auto_play_after_encode = true;
+                        self.start_tx_encode(&ctx);
+                    }
                     ui.add_space(8.0);
                     // Orijinal Windows göndericisindeki "Scale" açılır listesiyle BİREBİR aynı
                     // (bkz. `TX_SCALE_LABELS` dokümantasyonu) — kullanıcı geri bildirimiyle
@@ -1355,12 +1437,43 @@ impl eframe::App for KgstvApp {
             }
             Mode::Tx => {
                 ui.heading("Gönderilecek Görüntü (320×240)");
+                // Çalarken ilerleme çubuğu — kullanıcı isteği: "bir yuzde tamamlanma gosteren
+                // progressbar mi koysak". Süre-bazlı (örnek-hassas takip yerine — `play_blocking`
+                // cihaz gerektirdiğinde yeniden örnekleme yapabilir, ama süre değişmez).
+                if self.tx_playing {
+                    if let Some((sr, samples)) = &self.tx_audio {
+                        let elapsed = self.tx_play_started.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
+                        let total = (samples.len() as f64 / sr).max(1e-6);
+                        let frac = (elapsed / total).clamp(0.0, 1.0);
+                        ui.add(egui::ProgressBar::new(frac as f32).text(format!("gönderiliyor — %{:.0}", frac * 100.0)));
+                    }
+                }
                 if let Some(tex) = &self.tx_texture {
                     let scale = 2.0;
-                    ui.add(
+                    let resp = ui.add(
                         egui::Image::new(tex)
                             .fit_to_exact_size(egui::vec2(IMG_W as f32 * scale, IMG_H as f32 * scale)),
                     );
+                    // Şu ana kadar gönderilmiş tile'ları resim üzerinde işaretle — kullanıcı
+                    // isteği: "resimde gonderilen kismi isaretlesek anlasilirlik icin". Henüz
+                    // GÖNDERİLMEMİŞ tile'lar karartılır, böylece "açığa çıkan" kısım gönderilmiş
+                    // olanı gösterir (bir tarama/reveal etkisi).
+                    if self.tx_playing {
+                        let sent = self.tx_tiles_sent_so_far();
+                        let painter = ui.painter_at(resp.rect);
+                        let tile_px = TILE as f32 * scale;
+                        for ty in 0..TILES_Y {
+                            for tx_ in 0..TILES_X {
+                                if sent.contains(&(tx_ as u8, ty as u8)) {
+                                    continue;
+                                }
+                                let x0 = resp.rect.left() + tx_ as f32 * tile_px;
+                                let y0 = resp.rect.top() + ty as f32 * tile_px;
+                                let r = egui::Rect::from_min_size(egui::pos2(x0, y0), egui::vec2(tile_px, tile_px));
+                                painter.rect_filled(r, 0.0, egui::Color32::from_black_alpha(165));
+                            }
+                        }
+                    }
                 }
             }
         });

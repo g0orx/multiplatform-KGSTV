@@ -300,16 +300,19 @@ fn find_mid_stream_sync(clk: &ToneClock, anchor: f64, search_start: i64, search_
 /// her frame kendi senkron kelimesiyle, sonda 3× END sinyali) ve ardından ses örneklerine
 /// encode eder. `header.size`, `data_bits.len()` ile TUTARLI olmalıdır (çağıran sorumludur).
 pub fn encode_session_audio(frames: &[(InfoChunk, Vec<u8>)], sample_rate: f64) -> Vec<f64> {
-    encode_session_audio_cb(frames, sample_rate, |_, _| {})
+    encode_session_audio_cb(frames, sample_rate, |_, _, _| {})
 }
 
 /// `encode_session_audio` ile aynı, ama her frame'in bit-düzeyi kodlaması bitince
-/// `on_progress(tamamlanan, toplam)` çağrılır — GUI gibi ilerleme çubuğu gösteren
-/// çağıranlar için (görüntü gönderiminde yüzlerce tile olabileceğinden).
+/// `on_progress(tamamlanan, toplam, o_ana_kadarki_toplam_örnek_sayısı)` çağrılır — GUI gibi
+/// ilerleme çubuğu gösteren çağıranlar için (görüntü gönderiminde yüzlerce tile olabileceğinden).
+/// Üçüncü parametre (kümülatif örnek sayısı), çağıranın her frame'in ÇALMA sırasında sesin
+/// hangi konumuna denk geldiğini (ör. TX önizlemesinde "şu ana kadar gönderilen tile'ları"
+/// işaretlemek için) hesaplayabilmesi içindir.
 pub fn encode_session_audio_cb(
     frames: &[(InfoChunk, Vec<u8>)],
     sample_rate: f64,
-    mut on_progress: impl FnMut(usize, usize),
+    mut on_progress: impl FnMut(usize, usize, usize),
 ) -> Vec<f64> {
     // Preamble/senkron/header HER ZAMAN MSK (bkz. protocol_spec.md: "Bilgi chunk'ı, veri
     // chunk'ının kendi modülasyon/kodlama ayarından bağımsız olarak her zaman MSK modülasyonu
@@ -334,7 +337,7 @@ pub fn encode_session_audio_cb(
         } else {
             audio.extend(modulate_msk(&enc_bits, sample_rate));
         }
-        on_progress(i + 1, total);
+        on_progress(i + 1, total, audio.len());
     }
     // Normal tamamlanma: bitiş sinyali 3 kez (bkz. protocol_spec.md, çerçeveleme kuralları).
     let end_hdr = InfoChunk { sys: 0, com: Command::End as u8, c: 0, m: 0, x: 0, y: 0, sc: 0, size: 0, crc: 0 };
