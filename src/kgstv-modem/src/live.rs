@@ -27,21 +27,77 @@ impl RingBuffer {
     }
 }
 
+/// Sistemdeki ses giriş cihazlarının adlarını listeler (dropdown doldurmak için).
+/// (cpal 0.18: cihaz adı `Device::name()` değil `Display`/`to_string()` üzerinden gelir.)
+pub fn list_input_devices() -> Vec<String> {
+    let host = cpal::default_host();
+    match host.input_devices() {
+        Ok(it) => it.map(|d| d.to_string()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Sistemdeki ses çıkış cihazlarının adlarını listeler (dropdown doldurmak için).
+pub fn list_output_devices() -> Vec<String> {
+    let host = cpal::default_host();
+    match host.output_devices() {
+        Ok(it) => it.map(|d| d.to_string()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Varsayılan giriş cihazının adı (dropdown'da "hangisi seçili olsun" için).
+pub fn default_input_device_name() -> Option<String> {
+    cpal::default_host().default_input_device().map(|d| d.to_string())
+}
+
+/// Varsayılan çıkış cihazının adı.
+pub fn default_output_device_name() -> Option<String> {
+    cpal::default_host().default_output_device().map(|d| d.to_string())
+}
+
+fn find_input_device(name: Option<&str>) -> Result<cpal::Device, String> {
+    let host = cpal::default_host();
+    match name {
+        Some(n) => host
+            .input_devices()
+            .map_err(|e| format!("Giriş cihazları listelenemedi: {e}"))?
+            .find(|d| d.to_string() == n)
+            .ok_or_else(|| format!("Giriş cihazı bulunamadı: {n}")),
+        None => host.default_input_device().ok_or_else(|| "Varsayılan ses giriş cihazı bulunamadı".to_string()),
+    }
+}
+
+fn find_output_device(name: Option<&str>) -> Result<cpal::Device, String> {
+    let host = cpal::default_host();
+    match name {
+        Some(n) => host
+            .output_devices()
+            .map_err(|e| format!("Çıkış cihazları listelenemedi: {e}"))?
+            .find(|d| d.to_string() == n)
+            .ok_or_else(|| format!("Çıkış cihazı bulunamadı: {n}")),
+        None => host.default_output_device().ok_or_else(|| "Varsayılan ses çıkış cihazı bulunamadı".to_string()),
+    }
+}
+
 /// Aktif bir canlı yakalama oturumu. `Drop` edildiğinde akış durur.
 pub struct LiveCapture {
     pub sample_rate: f64,
     buffer: Arc<Mutex<RingBuffer>>,
+    gain: Arc<Mutex<f32>>,
+    /// En son yakalanan parçanın tepe (peak) genliği (0.0'dan yukarı, tipik olarak ~0-1.5) —
+    /// GUI'nin VU metresi bunu periyodik olarak okur.
+    level: Arc<Mutex<f32>>,
     _stream: cpal::Stream,
 }
 
 impl LiveCapture {
-    /// Varsayılan giriş cihazından yakalamayı başlatır. `max_seconds`: tamponda tutulacak
-    /// azami süre (daha eski örnekler otomatik atılır).
-    pub fn start(max_seconds: f64) -> Result<Self, String> {
-        let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| "Varsayılan ses giriş cihazı bulunamadı".to_string())?;
+    /// Belirtilen (ya da `None` ise varsayılan) giriş cihazından yakalamayı başlatır.
+    /// `max_seconds`: tamponda tutulacak azami süre (daha eski örnekler otomatik atılır).
+    /// `initial_gain`: örneklere uygulanan çarpan (1.0 = değişiklik yok) — sonradan
+    /// `set_gain()` ile canlı olarak değiştirilebilir.
+    pub fn start(max_seconds: f64, device_name: Option<&str>, initial_gain: f32) -> Result<Self, String> {
+        let device = find_input_device(device_name)?;
         let config = device
             .default_input_config()
             .map_err(|e| format!("Giriş yapılandırması alınamadı: {e}"))?;
@@ -51,6 +107,10 @@ impl LiveCapture {
         let max_samples = (max_seconds * sample_rate).round() as usize;
         let buffer = Arc::new(Mutex::new(RingBuffer { data: VecDeque::new(), max_samples }));
         let buffer_cb = buffer.clone();
+        let gain = Arc::new(Mutex::new(initial_gain));
+        let gain_cb = gain.clone();
+        let level = Arc::new(Mutex::new(0.0f32));
+        let level_cb = level.clone();
 
         let err_fn = |e| eprintln!("[kgstv-modem::live] ses akışı hatası: {e}");
         let stream_config: cpal::StreamConfig = config.clone().into();
@@ -60,7 +120,7 @@ impl LiveCapture {
                 .build_input_stream(
                     stream_config.clone(),
                     move |data: &[f32], _| {
-                        push_downmixed(&buffer_cb, data, channels, |v| v as f64);
+                        push_downmixed(&buffer_cb, &gain_cb, &level_cb, data, channels, |v| v as f64);
                     },
                     err_fn,
                     None,
@@ -70,7 +130,9 @@ impl LiveCapture {
                 .build_input_stream(
                     stream_config.clone(),
                     move |data: &[i16], _| {
-                        push_downmixed(&buffer_cb, data, channels, |v| v as f64 / i16::MAX as f64);
+                        push_downmixed(&buffer_cb, &gain_cb, &level_cb, data, channels, |v| {
+                            v as f64 / i16::MAX as f64
+                        });
                     },
                     err_fn,
                     None,
@@ -80,7 +142,7 @@ impl LiveCapture {
                 .build_input_stream(
                     stream_config.clone(),
                     move |data: &[u16], _| {
-                        push_downmixed(&buffer_cb, data, channels, |v| {
+                        push_downmixed(&buffer_cb, &gain_cb, &level_cb, data, channels, |v| {
                             (v as f64 - 32768.0) / 32768.0
                         });
                     },
@@ -93,7 +155,7 @@ impl LiveCapture {
 
         stream.play().map_err(|e| format!("Ses akışı başlatılamadı: {e}"))?;
 
-        Ok(LiveCapture { sample_rate, buffer, _stream: stream })
+        Ok(LiveCapture { sample_rate, buffer, gain, level, _stream: stream })
     }
 
     /// O ana kadar biriken örneklerin bir kopyasını döner (decode için).
@@ -109,6 +171,21 @@ impl LiveCapture {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Giriş kazancını (çarpan; 1.0 = değişiklik yok) CANLI olarak günceller — akışı yeniden
+    /// başlatmaya gerek yok.
+    pub fn set_gain(&self, gain: f32) {
+        *self.gain.lock().unwrap() = gain.max(0.0);
+    }
+
+    pub fn gain(&self) -> f32 {
+        *self.gain.lock().unwrap()
+    }
+
+    /// En son yakalanan parçanın tepe (peak) genliği — VU metresi için (GUI periyodik okur).
+    pub fn level(&self) -> f32 {
+        *self.level.lock().unwrap()
     }
 }
 
@@ -190,15 +267,19 @@ impl Drop for PlaybackSim {
     }
 }
 
-/// Verilen mono örnekleri (-1.0..1.0, `sample_rate` Hz) varsayılan ses çıkış cihazından çalar,
-/// çalma bitene kadar (çağıran thread'i) bloklar. `session::encode_session_audio` ile üretilen
-/// TX sinyalini doğrudan hoparlöre/ses kartına vermek için — çağıran, UI donmasın diye bunu
-/// ayrı bir thread'den çağırmalıdır.
-pub fn play_blocking(samples: &[f64], sample_rate: f64) -> Result<(), String> {
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| "Varsayılan ses çıkış cihazı bulunamadı".to_string())?;
+/// Verilen mono örnekleri (-1.0..1.0, `sample_rate` Hz) belirtilen (ya da `None` ise
+/// varsayılan) ses çıkış cihazından çalar, çalma bitene kadar (çağıran thread'i) bloklar.
+/// `gain`: çalmadan önce örneklere uygulanan çarpan (1.0 = değişiklik yok). `session::
+/// encode_session_audio` ile üretilen TX sinyalini doğrudan hoparlöre/ses kartına vermek için
+/// — çağıran, UI donmasın diye bunu ayrı bir thread'den çağırmalıdır.
+pub fn play_blocking(samples: &[f64], sample_rate: f64, device_name: Option<&str>, gain: f32) -> Result<(), String> {
+    let device = find_output_device(device_name)?;
+    let gained: Vec<f64> = if (gain - 1.0).abs() < 1e-6 {
+        samples.to_vec()
+    } else {
+        samples.iter().map(|&v| v * gain as f64).collect()
+    };
+    let samples = gained.as_slice();
 
     let want_sr = sample_rate.round() as u32;
     let ranges: Vec<_> = device
@@ -310,17 +391,22 @@ fn pull_upmixed<T: Copy + Default>(
 
 fn push_downmixed<T: Copy>(
     buffer: &Arc<Mutex<RingBuffer>>,
+    gain: &Arc<Mutex<f32>>,
+    level: &Arc<Mutex<f32>>,
     data: &[T],
     channels: usize,
     to_f64: impl Fn(T) -> f64,
 ) {
+    let g = gain.lock().map(|g| *g as f64).unwrap_or(1.0);
     let mono: Vec<f64> = if channels > 1 {
-        data.chunks(channels)
-            .map(|c| c.iter().map(|&v| to_f64(v)).sum::<f64>() / channels as f64)
-            .collect()
+        data.chunks(channels).map(|c| g * c.iter().map(|&v| to_f64(v)).sum::<f64>() / channels as f64).collect()
     } else {
-        data.iter().map(|&v| to_f64(v)).collect()
+        data.iter().map(|&v| g * to_f64(v)).collect()
     };
+    let peak = mono.iter().fold(0.0f64, |m, &v| m.max(v.abs())) as f32;
+    if let Ok(mut lv) = level.lock() {
+        *lv = peak;
+    }
     if let Ok(mut buf) = buffer.lock() {
         buf.push_slice(&mono);
     }
