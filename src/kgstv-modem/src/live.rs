@@ -290,7 +290,18 @@ impl Drop for PlaybackSim {
 /// `gain`: çalmadan önce örneklere uygulanan çarpan (1.0 = değişiklik yok). `session::
 /// encode_session_audio` ile üretilen TX sinyalini doğrudan hoparlöre/ses kartına vermek için
 /// — çağıran, UI donmasın diye bunu ayrı bir thread'den çağırmalıdır.
-pub fn play_blocking(samples: &[f64], sample_rate: f64, device_name: Option<&str>, gain: f32) -> Result<(), String> {
+///
+/// `stop`: verilirse, çalma sırasında periyodik olarak kontrol edilir — `true` olduğunda
+/// çalma HEMEN kesilir (akış drop edilir) ve fonksiyon erken döner. Bir gönderim (özellikle
+/// tam bir görüntü) dakikalarca sürebileceğinden, kullanıcının "Çal" adımını iptal
+/// edebilmesi için (kullanıcı isteği: "gondermede cal adimini durdurabilecegim bir buton").
+pub fn play_blocking(
+    samples: &[f64],
+    sample_rate: f64,
+    device_name: Option<&str>,
+    gain: f32,
+    stop: Option<Arc<AtomicBool>>,
+) -> Result<(), String> {
     let device = find_output_device(device_name)?;
     let gained: Vec<f64> = if (gain - 1.0).abs() < 1e-6 {
         samples.to_vec()
@@ -366,7 +377,21 @@ pub fn play_blocking(samples: &[f64], sample_rate: f64, device_name: Option<&str
     // `total`/`samples`, yeniden örneklenmiş olabileceğinden süre hesabı `effective_sample_rate`
     // (cihazın gerçekten çaldığı hız) ile yapılmalı — orijinal `sample_rate` ile DEĞİL.
     let duration = Duration::from_secs_f64(total as f64 / effective_sample_rate + 0.3);
-    std::thread::sleep(duration);
+    // Tek bir uzun `sleep` yerine kısa aralıklarla uyuyup `stop` bayrağını kontrol et —
+    // kullanıcı iptal ederse akış (bu fonksiyondan erken dönüşle `stream` drop edilince)
+    // HEMEN durur, dakikalarca beklemek zorunda kalmaz.
+    const POLL_INTERVAL: Duration = Duration::from_millis(100);
+    let mut elapsed = Duration::ZERO;
+    while elapsed < duration {
+        if let Some(s) = &stop {
+            if s.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+        }
+        let step = POLL_INTERVAL.min(duration - elapsed);
+        std::thread::sleep(step);
+        elapsed += step;
+    }
     Ok(())
 }
 

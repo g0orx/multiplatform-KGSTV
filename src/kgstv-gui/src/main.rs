@@ -13,7 +13,7 @@
 //! derlenir (egui/eframe).
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -190,6 +190,9 @@ struct KgstvApp {
     tx_status: String,
     tx_audio: Option<(f64, Arc<Vec<f64>>)>,
     tx_playing: bool,
+    /// Şu an çalınan sesi erken kesmek için — bkz. `play_tx`/`stop_tx_playback` (kullanıcı
+    /// isteği: "gondermede cal adimini durdurabilecegim bir buton").
+    tx_play_stop: Option<Arc<AtomicBool>>,
     tx_rx: Option<Receiver<TxMsg>>,
 }
 
@@ -262,6 +265,7 @@ impl Default for KgstvApp {
             tx_status: "Bir resim seçin.".to_string(),
             tx_audio: None,
             tx_playing: false,
+            tx_play_stop: None,
             tx_rx: None,
         }
     }
@@ -693,19 +697,31 @@ impl KgstvApp {
         }
         self.tx_playing = true;
         self.tx_status = "Çalınıyor...".to_string();
+        let stop = Arc::new(AtomicBool::new(false));
+        self.tx_play_stop = Some(stop.clone());
         let (tx, rx) = mpsc::channel();
         self.tx_rx = Some(rx);
         let ctx1 = ctx.clone();
         let device = self.selected_output_device.clone();
         let gain = self.output_gain;
         std::thread::spawn(move || {
-            let msg = match kgstv_modem::play_blocking(&samples, sr, device.as_deref(), gain) {
+            let msg = match kgstv_modem::play_blocking(&samples, sr, device.as_deref(), gain, Some(stop)) {
                 Ok(()) => TxMsg::PlaybackDone,
                 Err(e) => TxMsg::PlaybackError(e),
             };
             let _ = tx.send(msg);
             ctx1.request_repaint();
         });
+    }
+
+    /// Devam eden "Çal" adımını erken keser (bkz. `play_tx`/`tx_play_stop` — kullanıcı isteği).
+    /// Gerçek durum değişikliği (`tx_playing = false`) arka plan thread'i döndüğünde
+    /// `drain_tx_messages`'ta `TxMsg::PlaybackDone` ile gelir — burada sadece bayrak set edilir.
+    fn stop_tx_playback(&mut self) {
+        if let Some(stop) = &self.tx_play_stop {
+            stop.store(true, Ordering::Relaxed);
+            self.tx_status = "Durduruluyor...".to_string();
+        }
     }
 
     fn drain_tx_messages(&mut self) {
@@ -731,10 +747,17 @@ impl KgstvApp {
                 }
                 TxMsg::PlaybackDone => {
                     self.tx_playing = false;
-                    self.tx_status = "Çalma tamamlandı.".to_string();
+                    // Kullanıcı "Durdur"a bastıysa `play_blocking` de erken `Ok(())` ile döner
+                    // (bkz. o fonksiyonun dokümantasyonu) — bayrağa bakıp doğru mesajı göster.
+                    let stopped_by_user =
+                        self.tx_play_stop.as_ref().is_some_and(|s| s.load(Ordering::Relaxed));
+                    self.tx_status =
+                        if stopped_by_user { "Çalma durduruldu.".to_string() } else { "Çalma tamamlandı.".to_string() };
+                    self.tx_play_stop = None;
                 }
                 TxMsg::PlaybackError(e) => {
                     self.tx_playing = false;
+                    self.tx_play_stop = None;
                     self.tx_status = format!("Çalma hatası: {e}");
                 }
             }
@@ -1171,6 +1194,11 @@ impl eframe::App for KgstvApp {
                             .clicked()
                         {
                             self.play_tx(&ctx);
+                        }
+                        // Gönderim (özellikle tam bir görüntü) dakikalarca sürebilir — kullanıcı
+                        // isteği: çalmayı erken kesebilecek bir buton.
+                        if ui.add_enabled(self.tx_playing, egui::Button::new("⏹ Durdur")).clicked() {
+                            self.stop_tx_playback();
                         }
                         if self.tx_encoding || self.tx_playing {
                             ui.spinner();
