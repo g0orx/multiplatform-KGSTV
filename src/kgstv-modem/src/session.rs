@@ -7,9 +7,16 @@ use crate::filter::bandpass_filtfilt;
 use crate::fsk4::{self, Fsk4Detector};
 use crate::msk::{modulate_msk, ToneClock};
 use crate::sync::{find_sync, SYNC_LEN};
-use kgstv_core::constants::PREAMBLE_LEN;
+use kgstv_core::constants::{sync_word_bits, PREAMBLE_LEN};
 use kgstv_core::header::InfoChunk;
 use kgstv_core::{frame, Command};
+
+/// Bozuk bir header'dan sonra ARA senkron kelimesi aranırken taranacak azami slot (bit)
+/// penceresi. Header okunamadığında `hdr.size` bilinmediğinden bu frame'in veri chunk'ının
+/// gerçek uzunluğu da bilinmez — bu yüzden pencere, olası en uzun veri chunk'ını (12-bit
+/// `size` alanı: azami 4095 bit ham veri + 16 bit CRC, konvolüsyonel kod açıkken ×2) rahatça
+/// kapsayacak kadar geniş tutulur.
+const MID_STREAM_RESYNC_WINDOW: i64 = ((4095 + 16) * 2) + HEADER_ENC_LEN + SYNC_LEN as i64 + 64;
 
 /// 4L-FSK veri chunk'ı çözümünde denenecek global faz ofseti (radyan) sayısı — bilinmeyen
 /// mutlak taşıyıcı fazını telafi etmek için [0, 60°) aralığını tarar (bkz. `fsk4.rs`
@@ -195,7 +202,20 @@ fn walk_frames(
         }
         let (hdr, metric, crc_ok) = decode_header_at(&clk, anchor, pos);
         if !crc_ok {
-            break;
+            // Header bozuk (kanal gürültüsü/RF bozulması) — eskiden burada tüm yürüyüş
+            // DURUYORDU, bu da (canlı modda anchor önbelleğe alındığından) her yeniden
+            // decode pas'ının TAM AYNI noktada tekrar tekrar takılıp kalmasına yol açıyordu
+            // (kullanıcı geri bildirimi: "birkac frame den sonra decode duruyor", ekranda
+            // frame sayacı sabit kalıyordu). Ardışık frame'ler arasında sadece 63-bit senkron
+            // kelimesi tekrarlandığından (preamble YOK), bozuk header'ı atlayıp bir SONRAKİ
+            // senkron kelimesini arayarak akışa geri dönebiliriz.
+            match find_mid_stream_sync(clk, anchor, pos, MID_STREAM_RESYNC_WINDOW.min(filtered.len() as i64 - pos)) {
+                Some(resync_pos) => {
+                    pos = resync_pos + SYNC_LEN as i64;
+                    continue;
+                }
+                None => break, // pencerede geçerli bir senkron bulunamadı — akışın sonu
+            }
         }
         let data_start = pos + HEADER_ENC_LEN;
         if !has_data_chunk(hdr.com) {
@@ -233,6 +253,35 @@ fn walk_frames(
         on_frame(FrameResult { header: hdr, header_metric: metric, data_bits: Some(data_bits), data_crc_ok });
         pos = data_start + slots_used + SYNC_LEN as i64;
     }
+}
+
+/// `search_start`'tan başlayarak `search_len` slot'luk bir pencerede, ARA (preamble'sız)
+/// 63-bit senkron kelimesini arar — `sync::sync_err`'in aksine `PREAMBLE_LEN` ofseti
+/// KULLANILMAZ, çünkü ardışık frame'ler arasında sadece senkron kelimesi tekrarlanır
+/// (preamble sadece dosyanın en başında bir kez gönderilir, bkz. protocol_spec.md). Bozuk
+/// bir header'dan sonra `walk_frames`'in akışa geri dönmesi için kullanılır.
+///
+/// Küçük bir bit-hata payına izin verilir (senkron kelimesinin kendisi de kanal
+/// gürültüsünden birkaç bit hatalı gelebilir); en iyi (en düşük hatalı) aday, eşik altındaysa
+/// döner — eşiğin üstündeyse (pencerede güvenilir bir eşleşme yoksa) `None`.
+fn find_mid_stream_sync(clk: &ToneClock, anchor: f64, search_start: i64, search_len: i64) -> Option<i64> {
+    let sw = sync_word_bits();
+    let mut best: Option<(u32, i64)> = None;
+    for cand in search_start..(search_start + search_len) {
+        let mut err = 0u32;
+        for i in 0..SYNC_LEN as i64 {
+            if clk.msk_bit(anchor, cand + i) != sw[i as usize] {
+                err += 1;
+            }
+        }
+        if best.is_none_or(|(be, _)| err < be) {
+            best = Some((err, cand));
+            if err == 0 {
+                break;
+            }
+        }
+    }
+    best.filter(|&(err, _)| err <= (SYNC_LEN as u32) / 6).map(|(_, cand)| cand)
 }
 
 /// Bir dizi (header, ham-veri-bitleri) frame'ini tam bir KG-STV oturumuna (preamble bir kez,
@@ -519,5 +568,72 @@ mod tests {
             assert!((g as i32 - eg as i32).abs() < 40, "g={g} beklenen={eg}");
             assert!((b as i32 - eb as i32).abs() < 40, "b={b} beklenen={eb}");
         }
+    }
+
+    /// Bir header'ın kanal gürültüsü/bozulmasıyla okunamaz hâle gelmesi, `walk_frames`'in
+    /// TÜM yürüyüşü durdurmaması gerektiğini doğrular — eskiden ilk bozuk header'da yürüyüş
+    /// TAMAMEN duruyordu (`if !crc_ok { break; }`), bu da canlı modda (anchor önbelleğe
+    /// alındığından) her yeniden decode pas'ının AYNI noktada tekrar tekrar takılıp
+    /// kalmasına yol açıyordu (kullanıcı geri bildirimi: "birkac frame den sonra decode
+    /// duruyor", ekranda frame/tile sayacı ilerlemeden sabit kalıyordu). Ortadaki bir
+    /// frame'in header'ını kasıtlı olarak gürültüyle bozup, ondan SONRAKİ frame'in yine de
+    /// bulunduğunu (ARA senkron kelimesi araması ile, bkz. `find_mid_stream_sync`) doğrular.
+    #[test]
+    fn walk_frames_recovers_after_corrupted_header_mid_stream() {
+        let sr = 44100.0;
+        let colors: [[u8; 3]; 3] = [[220, 30, 30], [30, 200, 30], [30, 30, 220]];
+        let quality = 10u8;
+        let mut frames = Vec::new();
+        for (i, &[r, g, b]) in colors.iter().enumerate() {
+            let rgb = [[[r, g, b]; 16]; 16];
+            let tile = kgstv_core::rgb_to_tile(&rgb);
+            let bits = kgstv_core::encode_tile(&tile, quality);
+            let hdr = InfoChunk {
+                sys: 0,
+                com: Command::Image as u8,
+                c: 0,
+                m: 0,
+                x: i as u8,
+                y: 0,
+                sc: quality,
+                size: bits.len() as u16,
+                crc: 0,
+            };
+            frames.push((hdr, bits));
+        }
+        let mut audio = encode_session_audio(&frames, sr);
+
+        // İkinci frame'in (index 1) header'ının ses içindeki tam konumunu, encode ile AYNI
+        // adımları (preamble + frame0[sync+header+data] + frame1'in senkronu) tekrarlayarak
+        // hesapla.
+        let mut prefix = modulate_msk(&frame::preamble_bits(), sr);
+        prefix.extend(modulate_msk(&frame::sync_bits(), sr));
+        prefix.extend(modulate_msk(&frame::encode_header(&frames[0].0), sr));
+        let enc0 = frame::encode_data_norm(&frames[0].1);
+        prefix.extend(modulate_msk(&enc0, sr));
+        prefix.extend(modulate_msk(&frame::sync_bits(), sr));
+        let header1_start = prefix.len();
+        let header1_len = modulate_msk(&frame::encode_header(&frames[1].0), sr).len();
+
+        // O bölgeyi gürültüyle değiştir (header CRC'sinin kesin başarısız olması için) — ama
+        // öncesindeki/sonrasındaki senkron kelimeleri ve diğer frame'ler bozulmadan kalır.
+        for (i, s) in audio[header1_start..header1_start + header1_len].iter_mut().enumerate() {
+            *s = if i % 2 == 0 { 0.9 } else { -0.9 };
+        }
+
+        let (_anchor, decoded) = decode_wav_sequential(&audio, sr, 500, 20);
+        let image_frames: Vec<_> = decoded.iter().filter(|f| f.header.com == Command::Image as u8).collect();
+
+        // Bozuk frame (x=1) header CRC hatası yüzünden listede yok — ama walk_frames resync
+        // ile ÜÇÜNCÜ frame'e (x=2) ulaşabilmeli.
+        assert!(
+            image_frames.iter().any(|f| f.header.x == 2 && f.data_crc_ok),
+            "3. tile (x=2), bozuk 2. frame'den SONRA resync ile bulunamadı — walk_frames \
+             akışa geri dönemedi (bkz. find_mid_stream_sync)"
+        );
+        assert!(
+            !image_frames.iter().any(|f| f.header.x == 1),
+            "bozuk header (x=1) yine de bir frame olarak raporlandı — beklenmiyordu"
+        );
     }
 }
