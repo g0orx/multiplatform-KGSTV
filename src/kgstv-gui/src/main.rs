@@ -97,6 +97,10 @@ struct KgstvApp {
     /// Şu ana kadar UI'a uygulanmış frame sayısı — `wav_sim_frames_applied` ile aynı amaç
     /// (bkz. `maybe_kick_live_decode`).
     live_frames_applied: usize,
+    /// İlk pas'ta bulunan senkron anchor'ı — sonraki pas'larda yeniden ARAMA yapmadan doğrudan
+    /// bu kullanılır (bkz. `maybe_kick_live_decode` dokümantasyonu — pas'tan pas'a arama
+    /// aralığı değiştiğinden yeniden arama farklı bir anchor bulup tüm yürüyüşü bozabiliyordu).
+    live_cached_anchor: Option<f64>,
 
     // Bir WAV dosyasını gerçek zamanlı hızda "oynatıyormuş gibi" besleme (anlık toplu decode
     // yerine — hem tile'ların gerçek KG-STV hızında gelmesi hem göz diyagramının o ana kadar
@@ -107,6 +111,8 @@ struct KgstvApp {
     /// pas'ın hangi frame'leri sessizce atlayıp SADECE yenilerini uygulayacağını belirler
     /// (bkz. `maybe_kick_wav_sim_decode`).
     wav_sim_frames_applied: usize,
+    /// `live_cached_anchor` ile aynı amaç, gerçek zamanlı WAV oynatma simülasyonu için.
+    wav_sim_cached_anchor: Option<f64>,
     /// Oynatma tamamen bitince yapılan son (bütün veriyi güvenlik payı olmadan kapsayan)
     /// decode pas'ından sonra `true` — artık her 700ms'de bir yeniden decode denemesini durdurur.
     wav_sim_final_pass_done: bool,
@@ -167,9 +173,11 @@ impl Default for KgstvApp {
             live: None,
             last_live_decode: Instant::now(),
             live_frames_applied: 0,
+            live_cached_anchor: None,
             wav_sim: None,
             last_wav_sim_decode: Instant::now(),
             wav_sim_frames_applied: 0,
+            wav_sim_cached_anchor: None,
             wav_sim_final_pass_done: false,
             last_audio: None,
             last_anchor: None,
@@ -247,7 +255,7 @@ impl KgstvApp {
             };
             let samples = Arc::new(audio.samples);
             let _ = tx.send(DecodeMsg::AudioReady { sample_rate: audio.sample_rate, samples: samples.clone() });
-            run_decode(&ctx1, &tx, path_str, audio.sample_rate, samples, 0);
+            run_decode(&ctx1, &tx, path_str, audio.sample_rate, samples, 0, None);
         });
     }
 
@@ -265,6 +273,7 @@ impl KgstvApp {
                 self.wav_sim = None; // canlı mod gerçek zamanlı WAV oynatmayı durdurur
                 self.live = Some(cap);
                 self.live_frames_applied = 0;
+                self.live_cached_anchor = None;
                 self.last_live_decode = Instant::now() - LIVE_REDECODE_INTERVAL; // hemen tetikle
                 let _ = ctx;
             }
@@ -292,6 +301,7 @@ impl KgstvApp {
                 self.last_anchor = None;
                 self.wav_sim = Some(kgstv_modem::PlaybackSim::start(audio.samples, audio.sample_rate));
                 self.wav_sim_frames_applied = 0;
+                self.wav_sim_cached_anchor = None;
                 self.wav_sim_final_pass_done = false;
                 self.last_wav_sim_decode = Instant::now() - WAV_SIM_REDECODE_INTERVAL; // hemen tetikle
             }
@@ -332,6 +342,9 @@ impl KgstvApp {
         if ring_full {
             self.reset_decode_state();
             self.live_frames_applied = 0;
+            // Tamponun başı kaymış (eski örnekler atıldı) — önbellekteki anchor artık bu yeni
+            // referans çerçevesinde YANLIŞ konuma işaret eder; taze bir arama şart.
+            self.live_cached_anchor = None;
         }
 
         self.last_live_decode = Instant::now();
@@ -343,8 +356,9 @@ impl KgstvApp {
         self.rx = Some(rx);
         let ctx1 = ctx.clone();
         let skip = self.live_frames_applied;
+        let known_anchor = self.live_cached_anchor;
         std::thread::spawn(move || {
-            run_decode(&ctx1, &tx, "(canlı)".to_string(), sample_rate, samples, skip);
+            run_decode(&ctx1, &tx, "(canlı)".to_string(), sample_rate, samples, skip, known_anchor);
         });
     }
 
@@ -392,8 +406,11 @@ impl KgstvApp {
         let ctx1 = ctx.clone();
         let label = format!("(gerçek zamanlı, {received_secs:.1}/{total_secs:.1} sn)");
         let skip = self.wav_sim_frames_applied;
+        // `PlaybackSim`'in tamponu (canlı mikrofonun aksine) asla eskiyi atmıyor, sadece
+        // büyüyor — bulunan anchor oturum boyunca hep geçerli kalır.
+        let known_anchor = self.wav_sim_cached_anchor;
         std::thread::spawn(move || {
-            run_decode(&ctx1, &tx, label, sample_rate, samples, skip);
+            run_decode(&ctx1, &tx, label, sample_rate, samples, skip, known_anchor);
         });
     }
 
@@ -727,10 +744,13 @@ impl KgstvApp {
                     self.last_anchor = Some(anchor);
                     if self.wav_sim.is_some() {
                         // Bir sonraki pas bu kadarını sessizce atlayıp sadece yeni frame'leri
-                        // uygulasın (bkz. `maybe_kick_wav_sim_decode`).
+                        // uygulasın (bkz. `maybe_kick_wav_sim_decode`); anchor'ı da önbelleğe al
+                        // ki bir sonraki pas yeniden ARAMA yapmadan doğrudan bunu kullansın.
                         self.wav_sim_frames_applied = self.frames_total;
+                        self.wav_sim_cached_anchor = Some(anchor);
                     } else if self.live.is_some() {
                         self.live_frames_applied = self.frames_total;
+                        self.live_cached_anchor = Some(anchor);
                     }
                     self.status = format!(
                         "Tamamlandı — senkron anchor={anchor:.1} örnek, {} frame, tile: {}/{}",
@@ -752,11 +772,18 @@ impl KgstvApp {
 ///
 /// `skip_frames`: yürüyüşün baştan `skip_frames` kadarını (zaten önceki bir pas'ta UI'a
 /// uygulanmış) SESSİZCE atlar, sadece YENİ frame'leri bildirir. Gerçek-zamanlı WAV oynatma
-/// simülasyonu için — tampon her pas'ta büyüdüğünden `decode_wav_sequential_cb` yine baştan
-/// yürümek zorunda (durum tutan bir API yok), ama bunu UI'a her seferinde "en baştan" gibi
-/// göstermek (görüntü/log'u sıfırlayıp yeniden doldurmak) kullanıcıya sanki her pas'ta "başa
-/// dönüp yeniden tarıyormuş" gibi görünür. Dosya/canlı modda `skip_frames=0` (her pas gerçekten
-/// yeni/farklı bir tarama).
+/// simülasyonu için — tampon her pas'ta büyüdüğünden yine baştan yürümek zorunda (durum tutan
+/// bir API yok), ama bunu UI'a her seferinde "en baştan" gibi göstermek (görüntü/log'u
+/// sıfırlayıp yeniden doldurmak) kullanıcıya sanki her pas'ta "başa dönüp yeniden tarıyormuş"
+/// gibi görünür. Dosya modunda `skip_frames=0`.
+///
+/// `known_anchor`: verilirse senkron ARAMASI tamamen atlanır, doğrudan bu anchor kullanılır.
+/// Büyüyen bir tamponu tekrar tekrar decode eden çağıranlar (canlı mikrofon/gerçek-zamanlı WAV
+/// oynatma) için KRİTİK — her pas'ta yeniden arama yapmak, arama aralığı tamponla birlikte
+/// değiştiğinden pas'tan pas'a birkaç örnek farklı bir anchor bulabiliyordu, bu da `skip_frames`
+/// ile eşleştirilmiş "önceden decode edilmiş" frame varsayımını bozup tüm yürüyüşün erken
+/// durmasına yol açıyordu (bkz. `kgstv_modem::decode_wav_sequential_cb_from_anchor`
+/// dokümantasyonu — kullanıcı geri bildirimiyle bulunan bir hataydı).
 fn run_decode(
     ctx: &egui::Context,
     tx: &Sender<DecodeMsg>,
@@ -764,24 +791,31 @@ fn run_decode(
     sample_rate: f64,
     samples: Arc<Vec<f64>>,
     skip_frames: usize,
+    known_anchor: Option<f64>,
 ) {
     let _ = tx.send(DecodeMsg::Started { label, sample_rate, n_samples: samples.len() });
     ctx.request_repaint();
 
-    // Senkronun kayıt cihazı başlatma gecikmesi/sessizlik yüzünden ilk saniyelerde
-    // olmayabileceğini göz önünde bulundurarak ilk 15 saniyeyi tara.
-    let coarse_search_len = ((15.0 * sample_rate) as i64).min(samples.len() as i64);
-
     let tx2 = tx.clone();
     let ctx2 = ctx.clone();
     let mut seen = 0usize;
-    let anchor = kgstv_modem::decode_wav_sequential_cb(&samples, sample_rate, coarse_search_len, 5000, move |fr| {
+    let frame_cb = move |fr| {
         if seen >= skip_frames {
             let _ = tx2.send(DecodeMsg::Frame(fr));
             ctx2.request_repaint();
         }
         seen += 1;
-    });
+    };
+
+    let anchor = if let Some(a) = known_anchor {
+        kgstv_modem::decode_wav_sequential_cb_from_anchor(&samples, sample_rate, a, 5000, frame_cb);
+        a
+    } else {
+        // Senkronun kayıt cihazı başlatma gecikmesi/sessizlik yüzünden ilk saniyelerde
+        // olmayabileceğini göz önünde bulundurarak ilk 15 saniyeyi tara.
+        let coarse_search_len = ((15.0 * sample_rate) as i64).min(samples.len() as i64);
+        kgstv_modem::decode_wav_sequential_cb(&samples, sample_rate, coarse_search_len, 5000, frame_cb)
+    };
     let _ = tx.send(DecodeMsg::Done { anchor });
     ctx.request_repaint();
 }

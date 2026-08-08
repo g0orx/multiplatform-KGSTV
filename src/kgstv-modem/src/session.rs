@@ -131,7 +131,7 @@ pub fn decode_wav_sequential_cb(
     sample_rate: f64,
     coarse_search_len: i64,
     max_frames: usize,
-    mut on_frame: impl FnMut(FrameResult),
+    on_frame: impl FnMut(FrameResult),
 ) -> f64 {
     let filtered = bandpass_filtfilt(samples, sample_rate, 900.0, 2200.0);
     let clk = ToneClock::new(&filtered, sample_rate);
@@ -147,7 +147,43 @@ pub fn decode_wav_sequential_cb(
         coarse_step as f64,
         0.05,
     );
+    walk_frames(&clk, &filtered, sample_rate, anchor, max_frames, on_frame);
+    anchor
+}
 
+/// `decode_wav_sequential_cb` ile aynı, ama senkron ARAMASINI atlayıp verilen `anchor`'ı
+/// doğrudan kullanır.
+///
+/// Büyüyen bir tamponu tekrar tekrar decode eden çağıranlar için (canlı mikrofon / gerçek
+/// zamanlı WAV oynatma simülasyonu, bkz. `kgstv-gui`): her pas'ta `find_sync`'i yeniden
+/// çalıştırmak, arama aralığı (`coarse_search_len = min(15sn, o anki tampon uzunluğu)`)
+/// tamponla birlikte değiştiğinden PAS'TAN PAS'A BİRKAÇ ÖRNEK FARKLI bir anchor bulabiliyordu
+/// — bu da daha önce başarıyla decode edilmiş frame'lerin konumunu kaydırıp, o pas'ın
+/// header CRC'sini erkenden bozup TÜM yürüyüşün (ve dolayısıyla görüntü tile'larının) hiç
+/// ilerlemeden durmasına yol açabiliyordu (gerçek kayıtla doğrulanan bir hataydı — kullanıcı
+/// geri bildirimi: "cozumleme de cok basarisiz ... goruntu hic cozumlemedi"). Anchor'ı bir kez
+/// bulup sabitlemek (çağıran tarafından `Option` olarak saklanıp tekrar verilerek) bu
+/// istikrarsızlığı ortadan kaldırır.
+pub fn decode_wav_sequential_cb_from_anchor(
+    samples: &[f64],
+    sample_rate: f64,
+    anchor: f64,
+    max_frames: usize,
+    on_frame: impl FnMut(FrameResult),
+) {
+    let filtered = bandpass_filtfilt(samples, sample_rate, 900.0, 2200.0);
+    let clk = ToneClock::new(&filtered, sample_rate);
+    walk_frames(&clk, &filtered, sample_rate, anchor, max_frames, on_frame);
+}
+
+fn walk_frames(
+    clk: &ToneClock,
+    filtered: &[f64],
+    sample_rate: f64,
+    anchor: f64,
+    max_frames: usize,
+    mut on_frame: impl FnMut(FrameResult),
+) {
     let mut pos = PREAMBLE_LEN as i64 + SYNC_LEN as i64;
     // Bir 4L-FSK chunk'ında bulunan ince zamanlama kayması, sonraki 4L-FSK chunk'ları için
     // ipucu olarak taşınır (bkz. `FSK4_SHIFT_SEARCH` dokümantasyonu — genelde tüm dosya için
@@ -197,7 +233,6 @@ pub fn decode_wav_sequential_cb(
         on_frame(FrameResult { header: hdr, header_metric: metric, data_bits: Some(data_bits), data_crc_ok });
         pos = data_start + slots_used + SYNC_LEN as i64;
     }
-    anchor
 }
 
 /// Bir dizi (header, ham-veri-bitleri) frame'ini tam bir KG-STV oturumuna (preamble bir kez,
@@ -252,6 +287,40 @@ pub fn encode_session_audio_cb(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `decode_wav_sequential_cb_from_anchor`, bilinen doğru anchor'la, tam aramalı
+    /// `decode_wav_sequential_cb` ile TAM AYNI sonucu vermeli — canlı mikrofon/gerçek-zamanlı
+    /// WAV oynatma simülasyonunun anchor'ı önbelleğe alıp yeniden kullanmasının (bkz. `kgstv-gui`
+    /// `maybe_kick_live_decode`) güvenli olduğunu kanıtlıyor.
+    #[test]
+    fn decode_from_known_anchor_matches_full_search() {
+        let sr = 44100.0;
+        let callsign = b"TESTCALL".to_vec();
+        let mut bits = Vec::new();
+        for &b in &callsign {
+            for i in (0..8).rev() {
+                bits.push((b >> i) & 1);
+            }
+        }
+        let hdr = InfoChunk { sys: 0, com: Command::Callsign as u8, c: 0, m: 0, x: 0, y: 0, sc: 10, size: bits.len() as u16, crc: 0 };
+        let audio = encode_session_audio(&[(hdr, bits.clone())], sr);
+
+        let (anchor, frames_full) = decode_wav_sequential(&audio, sr, 500, 10);
+
+        let mut frames_cached = Vec::new();
+        decode_wav_sequential_cb_from_anchor(&audio, sr, anchor, 10, |fr| frames_cached.push(fr));
+
+        assert_eq!(frames_full.len(), frames_cached.len());
+        for (a, b) in frames_full.iter().zip(frames_cached.iter()) {
+            assert_eq!(a.header.com, b.header.com);
+            assert_eq!(a.header.x, b.header.x);
+            assert_eq!(a.header.y, b.header.y);
+            assert_eq!(a.data_crc_ok, b.data_crc_ok);
+            assert_eq!(a.data_bits, b.data_bits);
+        }
+        assert!(frames_cached[0].data_crc_ok);
+        assert_eq!(frames_cached[0].data_bits.as_ref().unwrap(), &bits);
+    }
 
     /// TX -> RX uçtan uca, 4L-FSK veri chunk'ı: preamble/senkron/header her zaman MSK (bkz.
     /// `encode_session_audio_cb` dokümantasyonu), ama METİN veri chunk'ı `m=1` ile 4L-FSK

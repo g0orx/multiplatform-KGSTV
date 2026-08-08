@@ -25,7 +25,7 @@ pub use fsk4::{bits_to_levels, levels_to_bits, modulate_fsk4, Fsk4Detector};
 pub use discriminator::instantaneous_freq;
 pub use sync::{find_sync, sync_err, SYNC_LEN};
 pub use session::{
-    decode_wav_sequential, decode_wav_sequential_cb, encode_session_audio, encode_session_audio_cb,
-    FrameResult,
+    decode_wav_sequential, decode_wav_sequential_cb, decode_wav_sequential_cb_from_anchor,
+    encode_session_audio, encode_session_audio_cb, FrameResult,
 };
 pub use live::{play_blocking, LiveCapture, PlaybackSim};
