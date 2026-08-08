@@ -34,7 +34,16 @@ const MAX_LOG_LINES: usize = 500;
 const TX_SAMPLE_RATE: f64 = 44100.0;
 
 /// Canlı modda tamponda tutulan azami ses süresi — bundan eskisi otomatik atılır.
-const LIVE_BUFFER_SECONDS: f64 = 60.0;
+///
+/// 60 sn olarak bırakılmıştı ama bu, tam bir 300 karolu (20×15) görüntü aktarımının süresinden
+/// KISA — gerçek off-air kayıtları 78-148 sn arasında sürüyor (bkz. docs/protocol_spec.md,
+/// "148 saniyelik kayıt"; ve samples/*.wav test desenleri: MSK+konvolüsyon en kötü durumda
+/// ~109 sn). Tampon dolup `maybe_kick_live_decode` tam sıfırlama yaptığında görüntü YARIM
+/// kalmışken siliniyordu — kullanıcı geri bildirimi: "cagri isaretini cozuyor ama resim
+/// gelmiyor" (çağrı işareti aktarımın hemen başında, tek kısa frame olduğundan 60 sn dolmadan
+/// yakalanabiliyordu, ama görüntü hiçbir zaman bitmeden tampon dolup sıfırlanıyordu). Gerçek
+/// kayıtlardaki en uzun süreden rahat bir pay bırakmak için 200 sn'ye çıkarıldı.
+const LIVE_BUFFER_SECONDS: f64 = 200.0;
 /// Canlı modda kaç saniyede bir yeniden decode denemesi yapılır.
 const LIVE_REDECODE_INTERVAL: Duration = Duration::from_millis(2000);
 /// Gerçek zamanlı WAV oynatma simülasyonunda kaç saniyede bir yeniden decode denemesi yapılır
