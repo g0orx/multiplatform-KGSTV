@@ -619,7 +619,11 @@ impl KgstvApp {
     }
 
     /// 300 tile'ı (+ isteğe bağlı çağrı işareti/metin frame'i) kodlayıp MSK sesine çevirir.
-    fn start_tx_encode(&mut self, ctx: &egui::Context) {
+    /// `include_image`: `false` iken 300 görüntü tile'ı hiç eklenmez — sadece çağrı işareti
+    /// (varsa) + metin gönderilir (kullanıcı isteği: "text kutusunun yanindaki gonder text i
+    /// gondermeli sadece" — Mesaj kutusunun yanındaki "📨 Gönder" kısayolu için, resmi
+    /// kodlamadan hızlıca sadece metin göndersin diye).
+    fn start_tx_encode(&mut self, ctx: &egui::Context, include_image: bool) {
         self.tx_encoding = true;
         self.tx_progress = (0, 0);
         self.tx_status = "Kodlanıyor...".to_string();
@@ -666,23 +670,25 @@ impl KgstvApp {
                 };
                 frames.push((hdr, bits));
             }
-            for ty in 0..TILES_Y {
-                for tx_ in 0..TILES_X {
-                    let rgb = extract_tile_rgb(&rgba, tx_, ty);
-                    let tile = kgstv_core::rgb_to_tile(&rgb);
-                    let bits = kgstv_core::encode_tile(&tile, quality);
-                    let hdr = InfoChunk {
-                        sys: 0,
-                        com: Command::Image as u8,
-                        c: conv as u8,
-                        m: modulation,
-                        x: tx_ as u8,
-                        y: ty as u8,
-                        sc: quality,
-                        size: bits.len() as u16,
-                        crc: 0,
-                    };
-                    frames.push((hdr, bits));
+            if include_image {
+                for ty in 0..TILES_Y {
+                    for tx_ in 0..TILES_X {
+                        let rgb = extract_tile_rgb(&rgba, tx_, ty);
+                        let tile = kgstv_core::rgb_to_tile(&rgb);
+                        let bits = kgstv_core::encode_tile(&tile, quality);
+                        let hdr = InfoChunk {
+                            sys: 0,
+                            com: Command::Image as u8,
+                            c: conv as u8,
+                            m: modulation,
+                            x: tx_ as u8,
+                            y: ty as u8,
+                            sc: quality,
+                            size: bits.len() as u16,
+                            crc: 0,
+                        };
+                        frames.push((hdr, bits));
+                    }
                 }
             }
 
@@ -1046,6 +1052,19 @@ fn extract_tile_rgb(rgba: &[u8], tx: usize, ty: usize) -> [[[u8; 3]; TILE]; TILE
     out
 }
 
+/// 320×240 KG-STV görüntüsünü mevcut panel alanına (`available`) sığdıracak ölçeği hesaplar
+/// — sabit 2.0 ölçek, pencere varsayılan boyutunda görüntünün alttan kırpılıp kullanıcının
+/// pencereyi elle büyütmesini gerektiriyordu (kullanıcı geri bildirimi: "resim ekraninin
+/// yuksekligine gore etrafindaki cerceveyi ayarla, tam gormek icin ekrani buyutmem
+/// gerekiyor"). En-boy oranını koruyarak hem yükseklik hem genişliğe sığacak en büyük ölçeği
+/// seçer; çok küçük panellerde okunaksız olmasın diye 1.0'ın altına inmez, çok büyük
+/// pencerelerde de gereksiz devasa görünmesin diye 2.5'i geçmez.
+fn image_fit_scale(available: egui::Vec2) -> f32 {
+    let by_h = available.y / IMG_H as f32;
+    let by_w = available.x / IMG_W as f32;
+    by_h.min(by_w).clamp(1.0, 2.5)
+}
+
 /// Basit "LED" tarzı VU metresi: yatay bir çubuk, `level`'e (yaklaşık 0.0-1.2, tepe genlik)
 /// göre yeşilden kırmızıya yanan segmentlerden oluşur — klasik ses ekipmanı seviye göstergesi
 /// görünümü. `LiveCapture::level()`'i periyodik okuyarak (canlı yakalama sırasında UI zaten
@@ -1250,7 +1269,7 @@ impl eframe::App for KgstvApp {
                             .add_enabled(!self.tx_encoding, egui::Button::new("⚙ Kodla"))
                             .clicked()
                         {
-                            self.start_tx_encode(&ctx);
+                            self.start_tx_encode(&ctx, true);
                         }
                         if ui
                             .add_enabled(self.tx_audio.is_some() && !self.tx_encoding, egui::Button::new("💾 WAV Kaydet"))
@@ -1355,13 +1374,16 @@ impl eframe::App for KgstvApp {
                     ui.text_edit_multiline(&mut self.tx_message);
                     // Kullanıcı isteği: "text ekraninin yanina gonder diye bir buton ekle..
                     // butona basinca hem kodlama yapsin hem de calsin" — üstteki "⚙ Kodla" +
-                    // "🔊 Çal" ikilisini TEK adıma indiren kısayol.
+                    // "🔊 Çal" ikilisini TEK adıma indiren kısayol. Sonradan gelen düzeltme:
+                    // "text kutusunun yanindaki gonder text i gondermeli sadece" — bu buton
+                    // 300 tile'lık görüntüyü DAHİL ETMEZ, sadece çağrı işareti (varsa) + metni
+                    // kodlar (`include_image=false`) — hızlı bir metin-only gönderim kısayolu.
                     if ui
                         .add_enabled(!self.tx_encoding && !self.tx_playing, egui::Button::new("📨 Gönder"))
                         .clicked()
                     {
                         self.tx_auto_play_after_encode = true;
-                        self.start_tx_encode(&ctx);
+                        self.start_tx_encode(&ctx, false);
                     }
                     ui.add_space(8.0);
                     // Orijinal Windows göndericisindeki "Scale" açılır listesiyle BİREBİR aynı
@@ -1428,7 +1450,12 @@ impl eframe::App for KgstvApp {
             Mode::Rx => {
                 ui.heading("Görüntü (320×240)");
                 if let Some(tex) = &self.texture {
-                    let scale = 2.0;
+                    // Sabit 2.0 yerine mevcut panel alanına göre uyarlanan bir ölçek — pencere
+                    // varsayılan boyutunda görüntü kırpılıp kullanıcının pencereyi elle
+                    // büyütmesini gerektiriyordu (kullanıcı geri bildirimi: "resim ekraninin
+                    // yuksekligine gore etrafindaki cerceveyi ayarla, tam gormek icin ekrani
+                    // buyutmem gerekiyor").
+                    let scale = image_fit_scale(ui.available_size());
                     ui.add(
                         egui::Image::new(tex)
                             .fit_to_exact_size(egui::vec2(IMG_W as f32 * scale, IMG_H as f32 * scale)),
@@ -1449,7 +1476,7 @@ impl eframe::App for KgstvApp {
                     }
                 }
                 if let Some(tex) = &self.tx_texture {
-                    let scale = 2.0;
+                    let scale = image_fit_scale(ui.available_size());
                     let resp = ui.add(
                         egui::Image::new(tex)
                             .fit_to_exact_size(egui::vec2(IMG_W as f32 * scale, IMG_H as f32 * scale)),
@@ -1483,7 +1510,12 @@ impl eframe::App for KgstvApp {
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1100.0, 800.0])
+            // 800 yükseklik, varsayılan panel boyutlarıyla (üst araç çubuğu + 480px'lik 2×
+            // ölçekli görüntü + göz diyagramı paneli) görüntüyü kırpıyordu (bkz.
+            // `image_fit_scale` dokümantasyonu) — 960'a çıkarıldı ki varsayılan pencerede de
+            // görüntü tam sığsın (uyarlanan ölçek zaten daha küçük pencerelerde de asla
+            // kırpılmamasını garanti ediyor, bu sadece daha iyi bir varsayılanı hedefliyor).
+            .with_inner_size([1150.0, 960.0])
             .with_title("Atölye m-KGSTV"),
         ..Default::default()
     };
