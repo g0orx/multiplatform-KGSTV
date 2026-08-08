@@ -95,6 +95,18 @@ struct KgstvApp {
     last_callsign: Option<String>,
     last_text: Option<String>,
 
+    // Ses giriş/çıkış cihazı seçimi + seviye ayarı (RX ve TX ortak).
+    input_devices: Vec<String>,
+    output_devices: Vec<String>,
+    /// `None` = sistem varsayılanı.
+    selected_input_device: Option<String>,
+    selected_output_device: Option<String>,
+    /// Giriş/çıkış örneklerine uygulanan çarpan (1.0 = değişiklik yok). Giriş kazancı canlı
+    /// yakalama sırasında her karede `LiveCapture::set_gain`'e yazılır (akış yeniden
+    /// başlatılmadan anlık etkili olur); çıkış kazancı çalma anında uygulanır.
+    input_gain: f32,
+    output_gain: f32,
+
     // Canlı decode.
     live: Option<LiveCapture>,
     last_live_decode: Instant,
@@ -174,6 +186,12 @@ impl Default for KgstvApp {
             current_file: None,
             last_callsign: None,
             last_text: None,
+            input_devices: kgstv_modem::list_input_devices(),
+            output_devices: kgstv_modem::list_output_devices(),
+            selected_input_device: kgstv_modem::default_input_device_name(),
+            selected_output_device: kgstv_modem::default_output_device_name(),
+            input_gain: 1.0,
+            output_gain: 1.0,
             live: None,
             last_live_decode: Instant::now(),
             live_frames_applied: 0,
@@ -269,7 +287,7 @@ impl KgstvApp {
             self.status = "Canlı decode durduruldu.".to_string();
             return;
         }
-        match LiveCapture::start(LIVE_BUFFER_SECONDS) {
+        match LiveCapture::start(LIVE_BUFFER_SECONDS, self.selected_input_device.as_deref(), self.input_gain) {
             Ok(cap) => {
                 self.status = format!("Canlı dinleniyor @ {:.0} Hz — bekleniyor...", cap.sample_rate);
                 self.current_file = Some("(canlı giriş)".to_string());
@@ -629,8 +647,10 @@ impl KgstvApp {
         let (tx, rx) = mpsc::channel();
         self.tx_rx = Some(rx);
         let ctx1 = ctx.clone();
+        let device = self.selected_output_device.clone();
+        let gain = self.output_gain;
         std::thread::spawn(move || {
-            let msg = match kgstv_modem::play_blocking(&samples, sr) {
+            let msg = match kgstv_modem::play_blocking(&samples, sr, device.as_deref(), gain) {
                 Ok(()) => TxMsg::PlaybackDone,
                 Err(e) => TxMsg::PlaybackError(e),
             };
@@ -877,6 +897,39 @@ fn extract_tile_rgb(rgba: &[u8], tx: usize, ty: usize) -> [[[u8; 3]; TILE]; TILE
     out
 }
 
+/// Basit "LED" tarzı VU metresi: yatay bir çubuk, `level`'e (yaklaşık 0.0-1.2, tepe genlik)
+/// göre yeşilden kırmızıya yanan segmentlerden oluşur — klasik ses ekipmanı seviye göstergesi
+/// görünümü. `LiveCapture::level()`'i periyodik okuyarak (canlı yakalama sırasında UI zaten
+/// düzenli yeniden çiziliyor) güncellenir.
+fn paint_vu_meter(ui: &mut egui::Ui, level: f32) {
+    const N_SEGMENTS: usize = 20;
+    let (rect, _resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width().min(280.0), 18.0), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2.0, egui::Color32::from_gray(15));
+
+    let lit = ((level.clamp(0.0, 1.2) / 1.2) * N_SEGMENTS as f32).round() as usize;
+    let gap = 2.0;
+    let seg_w = (rect.width() - gap * (N_SEGMENTS as f32 - 1.0)) / N_SEGMENTS as f32;
+    for i in 0..N_SEGMENTS {
+        let x0 = rect.left() + i as f32 * (seg_w + gap);
+        let seg_rect =
+            egui::Rect::from_min_size(egui::pos2(x0, rect.top() + 2.0), egui::vec2(seg_w, rect.height() - 4.0));
+        let on = i < lit;
+        // Alt ~%65 yeşil, sonraki ~%20 sarı, üst ~%15 kırmızı — klasik VU metre eşikleri.
+        let color = if i >= N_SEGMENTS - 3 {
+            if on { egui::Color32::from_rgb(220, 40, 40) } else { egui::Color32::from_rgb(60, 20, 20) }
+        } else if i >= N_SEGMENTS - 7 {
+            if on { egui::Color32::from_rgb(230, 200, 30) } else { egui::Color32::from_rgb(60, 50, 15) }
+        } else if on {
+            egui::Color32::from_rgb(60, 220, 90)
+        } else {
+            egui::Color32::from_rgb(20, 50, 25)
+        };
+        painter.rect_filled(seg_rect, 1.0, color);
+    }
+}
+
 /// Göz diyagramını (`points`: (faz∈[0,1], yumuşak metrik∈[-1,1])) verilen dikdörtgen içine
 /// çizer. Ardışık noktalar aynı "iz" (trace) içinde birleştirilir; faz sarmalandığında
 /// (1.0'dan 0.0'a döndüğünde) yeni bir iz başlatılır — klasik üst üste binen çizgiler
@@ -1095,6 +1148,24 @@ impl eframe::App for KgstvApp {
                         ui.label(egui::RichText::new(format!("💬 Metin: {text}")).strong());
                     }
                     ui.separator();
+                    ui.collapsing("🎚 Ses Girişi", |ui| {
+                        let devices = self.input_devices.clone();
+                        egui::ComboBox::from_label("Cihaz")
+                            .selected_text(self.selected_input_device.as_deref().unwrap_or("(sistem varsayılanı)"))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.selected_input_device, None, "(sistem varsayılanı)");
+                                for d in &devices {
+                                    ui.selectable_value(&mut self.selected_input_device, Some(d.clone()), d);
+                                }
+                            });
+                        ui.add(egui::Slider::new(&mut self.input_gain, 0.0..=4.0).text("Giriş seviyesi"));
+                        if let Some(live) = &self.live {
+                            live.set_gain(self.input_gain);
+                        }
+                        let level = self.live.as_ref().map(|l| l.level()).unwrap_or(0.0);
+                        paint_vu_meter(ui, level);
+                    });
+                    ui.separator();
                     egui::ScrollArea::vertical().auto_shrink([false, false]).stick_to_bottom(true).show(
                         ui,
                         |ui| {
@@ -1125,6 +1196,19 @@ impl eframe::App for KgstvApp {
                     }
                     ui.separator();
                     ui.label("300 tile (20×15), 1200 baud MSK — gerçek KG-STV ile aynı çerçeveleme.");
+                    ui.separator();
+                    ui.collapsing("🎚 Ses Çıkışı", |ui| {
+                        let devices = self.output_devices.clone();
+                        egui::ComboBox::from_label("Cihaz")
+                            .selected_text(self.selected_output_device.as_deref().unwrap_or("(sistem varsayılanı)"))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.selected_output_device, None, "(sistem varsayılanı)");
+                                for d in &devices {
+                                    ui.selectable_value(&mut self.selected_output_device, Some(d.clone()), d);
+                                }
+                            });
+                        ui.add(egui::Slider::new(&mut self.output_gain, 0.0..=4.0).text("Çıkış seviyesi"));
+                    });
                 });
             }
         }
