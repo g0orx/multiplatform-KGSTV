@@ -220,6 +220,18 @@ fn walk_frames(
         let data_start = pos + HEADER_ENC_LEN;
         if !has_data_chunk(hdr.com) {
             on_frame(FrameResult { header: hdr, header_metric: metric, data_bits: None, data_crc_ok: false });
+            // END/ABORT, oturumun resmen bittiğini/iptal edildiğini bildiren sinyaldir (normal
+            // tamamlanmada 3× art arda gönderilir, bkz. protocol_spec.md). Bundan sonrası artık
+            // gerçek KG-STV verisi DEĞİL — sessizlik/gürültü. Eskiden yürüyüş buna rağmen devam
+            // ediyordu; bozuk-header resync eklendikten (bkz. `find_mid_stream_sync`) sonra bu,
+            // alıcının kalan gürültü içinde SAHTE bir senkron kelimesi bulup rastgele bir header
+            // CRC'sinin şansla tutması ihtimaliyle ekrana ÇÖP frame'ler (ve hatta yanlış x/y'ye
+            // yazılan görüntü tile'ları — kullanıcı geri bildirimi: "aldigi verileri de
+            // bozuyor") üretmesine yol açabiliyordu. BSR_REQUEST bilinçli olarak buraya dahil
+            // DEĞİL — o normal oturum akışının bir parçası, bitiş sinyali değil.
+            if matches!(Command::from_u8(hdr.com), Some(Command::End) | Some(Command::Abort)) {
+                break;
+            }
             pos = data_start + SYNC_LEN as i64;
             continue;
         }
@@ -635,5 +647,50 @@ mod tests {
             !image_frames.iter().any(|f| f.header.x == 1),
             "bozuk header (x=1) yine de bir frame olarak raporlandı — beklenmiyordu"
         );
+    }
+
+    /// Bir oturum normal şekilde bittiğinde (END sinyali), `walk_frames`'in bundan SONRAKİ
+    /// gürültüde/sessizlikte SAHTE frame'ler "bulmaya" devam ETMEMESİ gerektiğini doğrular —
+    /// bozuk-header resync eklendikten (bkz. `find_mid_stream_sync`) sonra yürüyüş END'den
+    /// sonra da devam edip arkasındaki gürültüde tesadüfen senkron-benzeri bir desene rastlayıp
+    /// geçersiz "frame"ler (hatta yanlış konuma yazılan görüntü tile'ları) üretebiliyordu
+    /// (kullanıcı geri bildirimi: "gonderici isini bitirdigi halde ... aldigi verileri de
+    /// bozuyor", "karsi tarafin gonderiminin bittigini anlayamiyoruz").
+    #[test]
+    fn walk_frames_stops_cleanly_at_end_signal_and_ignores_trailing_noise() {
+        let sr = 44100.0;
+        let callsign = b"TESTEND".to_vec();
+        let mut bits = Vec::new();
+        for &b in &callsign {
+            for i in (0..8).rev() {
+                bits.push((b >> i) & 1);
+            }
+        }
+        let hdr = InfoChunk { sys: 0, com: Command::Callsign as u8, c: 0, m: 0, x: 0, y: 0, sc: 10, size: bits.len() as u16, crc: 0 };
+        let mut audio = encode_session_audio(&[(hdr, bits)], sr);
+
+        // Alıcının gerçek transmisyon bittikten SONRA da dinlemeye devam ettiği canlı-mod
+        // senaryosunu simüle et: sona (deterministik, tekrarlamayan) "gürültü" ekle.
+        let mut state = 12345u32;
+        let noise_len = (5.0 * sr) as usize; // 5 sn'lik gürültü
+        for _ in 0..noise_len {
+            state = state.wrapping_mul(1103515245).wrapping_add(12345);
+            let v = ((state >> 16) as i32 % 2000) as f64 / 1000.0 - 1.0; // yaklaşık [-1,1)
+            audio.push(v);
+        }
+
+        let (_anchor, decoded) = decode_wav_sequential(&audio, sr, 500, 50);
+
+        // Beklenen: çağrı işareti frame'i, ardından İLK END frame'i (3× tekrarın hepsini
+        // yürümeye gerek yok — ilk yakalanan END'de yürüyüş DURMALI). Gürültüden SAHTE
+        // frame'ler eklenmemeli.
+        assert_eq!(
+            decoded.len(),
+            2,
+            "beklenmeyen frame sayısı/içeriği: {:?}",
+            decoded.iter().map(|f| f.header.com).collect::<Vec<_>>()
+        );
+        assert_eq!(decoded[0].header.com, Command::Callsign as u8);
+        assert_eq!(decoded[1].header.com, Command::End as u8);
     }
 }
