@@ -134,7 +134,20 @@ struct KgstvApp {
     /// İlk pas'ta bulunan senkron anchor'ı — sonraki pas'larda yeniden ARAMA yapmadan doğrudan
     /// bu kullanılır (bkz. `maybe_kick_live_decode` dokümantasyonu — pas'tan pas'a arama
     /// aralığı değiştiğinden yeniden arama farklı bir anchor bulup tüm yürüyüşü bozabiliyordu).
+    ///
+    /// **MUTLAK** (oturumun başından sayılan) bir örnek konumu olarak saklanır — `LiveCapture`
+    /// halka tamponu kırpmaya başladığında (`front_absolute_index()`), bir önceki `snapshot()`'a
+    /// göre hesaplanmış YEREL bir anchor artık YANLIŞ konuma işaret eder. Her pas'ta güncel
+    /// `front_absolute_index()` çıkarılarak o anki `snapshot()`'a göre yeniden yerelleştirilir
+    /// (bkz. `maybe_kick_live_decode`) — bu sayede tampon kırpılsa bile anchor GEÇERLİ kalır ve
+    /// (eskiden olduğu gibi) her kırpılmada TÜM ekranın silinip yeniden taranmasına gerek kalmaz
+    /// (kullanıcı geri bildirimi: "ilk seferinde duzgun calisiyor ama sonra ... tekrar tum
+    /// frameleri almaya calisti").
     live_cached_anchor: Option<f64>,
+    /// Şu an İŞLENMEKTE olan (ya da en son kicklenen) pas'ın `snapshot()`'ı alınırken geçerli
+    /// olan `front_absolute_index()` — o pas'ın `DecodeMsg::Done`'ı geldiğinde, döndürülen
+    /// (o pas'ın YEREL koordinatındaki) anchor'ı MUTLAK'a çevirmek için gerekli.
+    live_pass_front_index: u64,
 
     // Bir WAV dosyasını gerçek zamanlı hızda "oynatıyormuş gibi" besleme (anlık toplu decode
     // yerine — hem tile'ların gerçek KG-STV hızında gelmesi hem göz diyagramının o ana kadar
@@ -214,6 +227,7 @@ impl Default for KgstvApp {
             last_live_decode: Instant::now(),
             live_frames_applied: 0,
             live_cached_anchor: None,
+            live_pass_front_index: 0,
             wav_sim: None,
             last_wav_sim_decode: Instant::now(),
             wav_sim_frames_applied: 0,
@@ -314,6 +328,7 @@ impl KgstvApp {
                 self.live = Some(cap);
                 self.live_frames_applied = 0;
                 self.live_cached_anchor = None;
+                self.live_pass_front_index = 0;
                 self.last_live_decode = Instant::now() - LIVE_REDECODE_INTERVAL; // hemen tetikle
                 let _ = ctx;
             }
@@ -358,15 +373,26 @@ impl KgstvApp {
     /// pas'larda görülmemiş YENİ frame'ler uygulanarak) yapıyoruz — aksi hâlde her ~2sn'de bir
     /// ekran karardığı/frame sayacı 0'a döndüğü izlenimi veriyordu (kullanıcı geri bildirimi).
     ///
-    /// **İstisna:** `LiveCapture`'ın halka tamponu `LIVE_BUFFER_SECONDS` dolunca eski örnekleri
-    /// atmaya başlar — o noktadan sonra "frame index N" artık aynı sesi göstermeyebileceğinden
-    /// (tamponun başı kaymış olur), güvenli olmak için o pas'ta TAM sıfırlama yapılır.
+    /// **Tamponun kırpılması:** `LiveCapture`'ın halka tamponu `LIVE_BUFFER_SECONDS` dolunca
+    /// eski örnekleri atmaya başlar (bkz. `LiveCapture::front_absolute_index`) — bu, ondan
+    /// sonra HER pas'ta true kalan bir DURUM (200 sn dolduktan sonra tampon HER ZAMAN "dolu"),
+    /// bir kerelik bir olay DEĞİL. Eskiden bu "tampon dolu mu" (`raw.len() >= kapasite`)
+    /// kontrolüyle algılanıp her seferinde `reset_decode_state()` ile TÜM ekran (görüntü/log/
+    /// anchor) silinip baştan taratılıyordu — 200 sn'den uzun süren bir canlı dinlemede bu, HER
+    /// ~2 saniyede bir SONSUZA DEK tekrarlanan bir "her şeyi yeniden alıyor" görünümüne yol
+    /// açıyordu (kullanıcı geri bildirimi: "ilk seferinde duzgun calisiyor ama sonra ... tekrar
+    /// tum frameleri almaya calisti"). Düzeltme: önbellekteki anchor artık MUTLAK konumda
+    /// tutuluyor (bkz. `live_cached_anchor` dokümantasyonu) — her pas'ta güncel
+    /// `front_absolute_index()` çıkarılarak o anki `snapshot()`'a göre YENİDEN yerelleştiriliyor.
+    /// Anchor'ın işaret ettiği ses GERÇEKTEN atıldıysa (yerel konum negatif çıkarsa) SADECE
+    /// anchor önbelleği temizlenir (taze bir arama tetiklenir) — ekran/görüntü/log ASLA silinmez.
     fn maybe_kick_live_decode(&mut self, ctx: &egui::Context) {
         let Some(live) = &self.live else { return };
         if self.decoding || self.last_live_decode.elapsed() < LIVE_REDECODE_INTERVAL {
             return;
         }
         let sample_rate = live.sample_rate;
+        let front_index = live.front_absolute_index();
         let raw = live.snapshot();
         // Güvenlik payı: `maybe_kick_wav_sim_decode` ile aynı gerekçe — artımlı uygulamada
         // hiçbir frame yeniden ziyaret edilmediğinden, tamponun tam ucundaki kesilmiş bir
@@ -377,17 +403,22 @@ impl KgstvApp {
             return; // henüz anlamlı bir decode denemesi için yeterli "güvenli" örnek yok
         }
 
-        let buffer_capacity = (LIVE_BUFFER_SECONDS * sample_rate) as usize;
-        let ring_full = raw.len() >= buffer_capacity.saturating_sub(4096);
-        if ring_full {
-            self.reset_decode_state();
-            self.live_frames_applied = 0;
-            // Tamponun başı kaymış (eski örnekler atıldı) — önbellekteki anchor artık bu yeni
-            // referans çerçevesinde YANLIŞ konuma işaret eder; taze bir arama şart.
+        // Önbellekteki (MUTLAK) anchor'ı bu pas'ın snapshot'ına göre YEREL konuma çevir.
+        // Anchor'ın işaret ettiği ses tampondan gerçekten atıldıysa (yerel konum < 0), artık
+        // kullanılamaz — SADECE önbelleği temizle (ekranı SİLME: zaten decode edilmiş
+        // frame'ler geçerliliğini korur; bir sonraki pas taze bir arama yapıp varsa YENİ bir
+        // oturumu bulur).
+        let local_known_anchor = self.live_cached_anchor.and_then(|abs| {
+            let local = abs - front_index as f64;
+            if local >= 0.0 { Some(local) } else { None }
+        });
+        if self.live_cached_anchor.is_some() && local_known_anchor.is_none() {
             self.live_cached_anchor = None;
+            self.live_frames_applied = 0; // eski anchor'a göre sayılmış frame sayısı artık anlamsız
         }
 
         self.last_live_decode = Instant::now();
+        self.live_pass_front_index = front_index;
         let samples = Arc::new(raw[..safe_len].to_vec());
         self.last_audio = Some((sample_rate, samples.clone()));
 
@@ -396,7 +427,7 @@ impl KgstvApp {
         self.rx = Some(rx);
         let ctx1 = ctx.clone();
         let skip = self.live_frames_applied;
-        let known_anchor = self.live_cached_anchor;
+        let known_anchor = local_known_anchor;
         std::thread::spawn(move || {
             run_decode(&ctx1, &tx, "(canlı)".to_string(), sample_rate, samples, skip, known_anchor);
         });
@@ -798,7 +829,12 @@ impl KgstvApp {
                         self.wav_sim_cached_anchor = if frames_this_pass > 0 { Some(anchor) } else { None };
                     } else if self.live.is_some() {
                         self.live_frames_applied = self.frames_total;
-                        self.live_cached_anchor = if frames_this_pass > 0 { Some(anchor) } else { None };
+                        // `anchor`, bu pas'ın snapshot'ına göre YEREL — önbellekte MUTLAK
+                        // konumda tutuluyor (bkz. `live_cached_anchor` dokümantasyonu), o
+                        // yüzden bu pas'ın snapshot'ı alınırken geçerli olan
+                        // `live_pass_front_index` eklenerek MUTLAK'a çevrilir.
+                        self.live_cached_anchor =
+                            if frames_this_pass > 0 { Some(anchor + self.live_pass_front_index as f64) } else { None };
                     }
                     self.status = format!(
                         "Tamamlandı — senkron anchor={anchor:.1} örnek, {} frame, tile: {}/{}",

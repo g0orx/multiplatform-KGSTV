@@ -16,6 +16,14 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 struct RingBuffer {
     data: VecDeque<f64>,
     max_samples: usize,
+    /// `data[0]`'ın MUTLAK (tampon hiç kırpılmamış gibi, oturumun başından sayılan) örnek
+    /// indeksi — yani şimdiye kadar öne'den atılan toplam örnek sayısı. Tampon dolup eski
+    /// örnekler atılmaya başladığında, `kgstv-gui`'nin önbelleğe aldığı bir anchor'ın (bir
+    /// önceki `snapshot()`'a göre hesaplanmış örnek konumu) YENİ bir `snapshot()`'a göre
+    /// KAYMIŞ olacağını fark edip düzeltebilmesi için gerekli (bkz. `kgstv-gui`
+    /// `maybe_kick_live_decode` dokümantasyonu — kullanıcı geri bildirimi: "ilk seferinde
+    /// duzgun calisiyor ama sonra ... tekrar tum frameleri almaya calisti").
+    front_absolute_index: u64,
 }
 
 impl RingBuffer {
@@ -23,6 +31,7 @@ impl RingBuffer {
         self.data.extend(samples.iter().copied());
         while self.data.len() > self.max_samples {
             self.data.pop_front();
+            self.front_absolute_index += 1;
         }
     }
 }
@@ -105,7 +114,7 @@ impl LiveCapture {
         let sample_rate = config.sample_rate() as f64;
         let channels = config.channels() as usize;
         let max_samples = (max_seconds * sample_rate).round() as usize;
-        let buffer = Arc::new(Mutex::new(RingBuffer { data: VecDeque::new(), max_samples }));
+        let buffer = Arc::new(Mutex::new(RingBuffer { data: VecDeque::new(), max_samples, front_absolute_index: 0 }));
         let buffer_cb = buffer.clone();
         let gain = Arc::new(Mutex::new(initial_gain));
         let gain_cb = gain.clone();
@@ -167,6 +176,15 @@ impl LiveCapture {
     /// Şu ana kadar biriken örnek sayısı.
     pub fn len(&self) -> usize {
         self.buffer.lock().unwrap().data.len()
+    }
+
+    /// `snapshot()`'ın döneceği dizinin İLK örneğinin MUTLAK (oturumun başından sayılan)
+    /// indeksi — tampon henüz hiç kırpılmadıysa 0, kırpılmaya başladıysa şimdiye kadar
+    /// atılan örnek sayısı. Önceden önbelleğe alınmış bir anchor'ın (eski bir `snapshot()`'a
+    /// göre hesaplanmıştı) yeni bir `snapshot()`'a göre ne kadar KAYDIĞINI hesaplamak için
+    /// kullanılır (bkz. `kgstv-gui` `maybe_kick_live_decode`).
+    pub fn front_absolute_index(&self) -> u64 {
+        self.buffer.lock().unwrap().front_absolute_index
     }
 
     pub fn is_empty(&self) -> bool {
@@ -415,6 +433,27 @@ fn push_downmixed<T: Copy>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `front_absolute_index`, tampon kapasiteyi aşıp eski örnekler atılmaya başladığında
+    /// doğru artmalı — `kgstv-gui`'nin önbelleğe aldığı bir anchor'ı, tampon kırpıldıkça
+    /// doğru şekilde yeniden yerelleştirebilmesi (bkz. `LiveCapture::front_absolute_index`
+    /// dokümantasyonu) buna dayanıyor.
+    #[test]
+    fn ring_buffer_tracks_front_absolute_index_as_it_evicts() {
+        let mut buf = RingBuffer { data: VecDeque::new(), max_samples: 5, front_absolute_index: 0 };
+
+        buf.push_slice(&[1.0, 2.0, 3.0]);
+        assert_eq!(buf.front_absolute_index, 0); // henüz kırpma yok (3 < kapasite 5)
+        assert_eq!(buf.data.iter().copied().collect::<Vec<_>>(), vec![1.0, 2.0, 3.0]);
+
+        buf.push_slice(&[4.0, 5.0, 6.0, 7.0]); // toplam 7 > kapasite 5 -> 2 tanesi atılır
+        assert_eq!(buf.front_absolute_index, 2);
+        assert_eq!(buf.data.iter().copied().collect::<Vec<_>>(), vec![3.0, 4.0, 5.0, 6.0, 7.0]);
+
+        buf.push_slice(&[8.0]);
+        assert_eq!(buf.front_absolute_index, 3);
+        assert_eq!(buf.data.iter().copied().collect::<Vec<_>>(), vec![4.0, 5.0, 6.0, 7.0, 8.0]);
+    }
 
     #[test]
     fn playback_sim_grows_over_time_and_finishes() {
