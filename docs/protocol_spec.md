@@ -358,6 +358,44 @@ değerler farklı görüntü içeriğinden dolayı birebir eşleşmiyor, ama yö
 tutarlı). `SCALE_TABLE`'ın (0.07…2.0) kendisinin kgstv.exe içinde nerede/nasıl saklandığı henüz
 binary analizle doğrulanmadı — şimdilik kullanıcı bildirimine güveniliyor.
 
+#### ⚠️ DÜZELTME #2 (2026-08-08) — büyüklük hâlâ yanlıştı; GERÇEK referans görüntülerle çözüldü
+
+Yukarıdaki düzeltme YÖNÜ doğru veriyordu (aktarım süresi trendi tutarlıydı) ama BÜYÜKLÜĞÜ
+hâlâ yanlıştı — kullanıcı "goruntu hala sc 2.0 disinda kotu" diye bildirdi (sadece en kaba
+ayar (`sc=15`, Scale=2.0) kabul edilebilir çıkıyordu, diğer HER değerde gri/nötr olması
+gereken alanlarda bile rastgele renk lekeleri görülüyordu).
+
+`research/sampleaudio/`'da, tam olarak bu sorunu araştırmaya uygun bir hazine bulundu: iki
+GERÇEK off-air kaydı bilinen `Scale` ayarlarıyla (`KG-STV_.10_scale.wav` → header'dan
+`sc=3` doğrulandı, `KG-STV_.50_scale.wav` → `sc=7` doğrulandı) VE bunlara karşılık gelen,
+orijinal Windows ALICISINDAN alınmış piksel-hassasiyetinde referans görüntüler (`1scale.jpg`,
+`5scale.png`, ayrıca varsayılan `sc=10` için `1.0_scale.png` — üçü de tam 320×240, karo
+ızgarasıyla birebir hizalı).
+
+Bu üç dosya çiftiyle, düz/tek-renkli (AC≈0) çok sayıda (15+) karo üzerinde geriye doğru
+hesaplama yapıldı (`decode_tile_raw_dc` tanı yardımcısı ile ham DC katsayıları çıkarılıp,
+referans görüntüdeki aynı karo konumunun ortalama Y/Cb/Cr'siyle eşleştirilerek): gerçek
+`qval`, Düzeltme #1'in öngördüğünden TUTARLI ŞEKİLDE ~5× DAHA KÜÇÜK çıktı, ve üç nokta da
+(sc=3, sc=7, sc=10) TEK VE ÇOK BASİT bir ilişkiye mükemmel uydu:
+
+> **`qval = round(taban_tablo_değeri × SCALE_TABLE[sc])`**
+>
+> Yani "Scale" göstergedeki ondalık değerin (0.07…2.0) KENDİSİ, taban (quality=50)
+> kuantizasyon tablosunun DOĞRUDAN çarpanı — ara bir IJG "quality" formülüne (`5000/quality`
+> vb.) hiç gerek yok. İsim zaten "Scale" (ölçek/çarpan) — soyut bir "quality" parametresi
+> değil, orijinal yazılımın adlandırmasıyla tam tutarlı en basit yorum bu.
+
+Bu formülle yeniden decode edilen her iki gerçek kayıt da (bkz. `kgstv-core/src/jpeg.rs`
+`scale_qt` dokümantasyonu) artık referans görüntülerle GÖRSEL OLARAK neredeyse birebir
+örtüşüyor — eskiden gri/nötr alanlarda görülen rastgele renk lekeleri tamamen kayboldu.
+
+**Not:** Önceki `sc=10 → qt[0,0]=80` iddiası (yukarıdaki "ÇÖZÜLDÜ" bölümü) tek bir düz bloktan
+geriye doğru hesaplanmıştı; o ölçümün orijinal kaynağı bağımsız olarak yeniden doğrulanamadı.
+Buradaki 15+ noktalı, gerçek referans-görüntü çapraz kontrolü çok daha güçlü bir kanıt —
+`decodes_real_captured_solid_red_tile` testi (AYNI ham bitlerle, sadece düzeltilmiş
+beklenen değerlerle) bu düzeltmeyle güncellendi. `SCALE_TABLE[sc]`'nin kgstv.exe içinde
+nerede/nasıl saklandığı hâlâ binary analizle doğrulanmadı.
+
 ### ✅ `kgstv-modem` (Rust ses I/O + MSK modem) — Gerçek Kayıtla Uçtan Uca Doğrulandı (2026-08-07)
 
 `src/kgstv-modem/` cargo workspace üyesi olarak yazıldı: `wav` (hound tabanlı WAV I/O, örnekleme

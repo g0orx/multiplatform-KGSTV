@@ -20,4 +20,4 @@ pub mod jpeg;
 
 pub use constants::{Command, CodingMode, Modulation};
 pub use header::InfoChunk;
-pub use jpeg::{decode_tile, encode_tile, rgb_to_tile, tile_to_rgb, Tile};
+pub use jpeg::{decode_tile, decode_tile_raw_dc, encode_tile, rgb_to_tile, tile_to_rgb, Tile};

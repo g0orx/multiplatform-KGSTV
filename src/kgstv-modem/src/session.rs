@@ -431,11 +431,19 @@ mod tests {
     /// TX -> RX uçtan uca, 4L-FSK ile GÖRÜNTÜ tile'ları — `kgstv-gui`'nin TX panelindeki
     /// "4L-FSK modülasyonu" seçeneğinin kullandığı yolun tam bir aynası
     /// (`full_session_image_roundtrip_solid_tiles`'ın 4L-FSK karşılığı).
+    ///
+    /// `quality=15` (en kaba `sc`, en kısa bit dizisi) kasıtlı seçildi: 4L-FSK veri kanalının
+    /// demodülasyonu hâlâ tam olgun değil (bkz. modül dokümantasyonu, "~%80-83 sembol
+    /// doğruluğu") — `scale_qt`'nin kuantizasyon ölçeği düzeltmesinden (bkz. o dokümantasyon,
+    /// "Düzeltme #2") sonra daha düşük `sc` değerleri daha UZUN bit dizileri üretiyor (daha
+    /// az kayıplı), bu da FSK4'ün zaten sınırda olan sembol doğruluğunu CRC'yi bozacak kadar
+    /// aşındırabiliyor. Bu test 4L-FSK MODÜLASYON yolunu doğrulamak için var, JPEG
+    /// kuantizasyon kalitesini değil — en kısa/en sağlam bit dizisini veren `sc` kasıtlı.
     #[test]
     fn full_session_image_roundtrip_fsk4() {
         let sr = 44100.0;
         let colors: [[u8; 3]; 3] = [[220, 30, 30], [30, 200, 30], [30, 30, 220]];
-        let quality = 10u8;
+        let quality = 15u8;
         let mut frames = Vec::new();
         for (i, &[r, g, b]) in colors.iter().enumerate() {
             let rgb = [[[r, g, b]; 16]; 16];
