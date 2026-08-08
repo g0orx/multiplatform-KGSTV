@@ -1203,15 +1203,29 @@ impl eframe::App for KgstvApp {
                     }
                     ui.separator();
                     ui.collapsing("🎚 Ses Girişi", |ui| {
-                        let devices = self.input_devices.clone();
-                        egui::ComboBox::from_label("Cihaz")
-                            .selected_text(self.selected_input_device.as_deref().unwrap_or("(sistem varsayılanı)"))
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.selected_input_device, None, "(sistem varsayılanı)");
-                                for d in &devices {
-                                    ui.selectable_value(&mut self.selected_input_device, Some(d.clone()), d);
+                        ui.horizontal(|ui| {
+                            let devices = self.input_devices.clone();
+                            egui::ComboBox::from_label("Cihaz")
+                                .selected_text(self.selected_input_device.as_deref().unwrap_or("(sistem varsayılanı)"))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.selected_input_device, None, "(sistem varsayılanı)");
+                                    for d in &devices {
+                                        ui.selectable_value(&mut self.selected_input_device, Some(d.clone()), d);
+                                    }
+                                });
+                            // Cihaz listesini yeniden tara — sonradan takılan/çıkarılan bir
+                            // USB ses kartı, programı yeniden başlatmadan görünsün diye
+                            // (kullanıcı isteği). Seçili cihaz artık listede yoksa (çıkarılmış
+                            // olabilir) sistem varsayılanına düşülür.
+                            if ui.button("🔄").on_hover_text("Cihazları yeniden tara").clicked() {
+                                self.input_devices = kgstv_modem::list_input_devices();
+                                if let Some(sel) = &self.selected_input_device {
+                                    if !self.input_devices.contains(sel) {
+                                        self.selected_input_device = None;
+                                    }
                                 }
-                            });
+                            }
+                        });
                         ui.add(egui::Slider::new(&mut self.input_gain, 0.0..=4.0).text("Giriş seviyesi"));
                         if let Some(live) = &self.live {
                             live.set_gain(self.input_gain);
@@ -1265,15 +1279,26 @@ impl eframe::App for KgstvApp {
                     ui.label("300 tile (20×15), 1200 baud MSK — gerçek KG-STV ile aynı çerçeveleme.");
                     ui.separator();
                     ui.collapsing("🎚 Ses Çıkışı", |ui| {
-                        let devices = self.output_devices.clone();
-                        egui::ComboBox::from_label("Cihaz")
-                            .selected_text(self.selected_output_device.as_deref().unwrap_or("(sistem varsayılanı)"))
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.selected_output_device, None, "(sistem varsayılanı)");
-                                for d in &devices {
-                                    ui.selectable_value(&mut self.selected_output_device, Some(d.clone()), d);
+                        ui.horizontal(|ui| {
+                            let devices = self.output_devices.clone();
+                            egui::ComboBox::from_label("Cihaz")
+                                .selected_text(self.selected_output_device.as_deref().unwrap_or("(sistem varsayılanı)"))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.selected_output_device, None, "(sistem varsayılanı)");
+                                    for d in &devices {
+                                        ui.selectable_value(&mut self.selected_output_device, Some(d.clone()), d);
+                                    }
+                                });
+                            // Bkz. giriş tarafındaki aynı butonun yorumu.
+                            if ui.button("🔄").on_hover_text("Cihazları yeniden tara").clicked() {
+                                self.output_devices = kgstv_modem::list_output_devices();
+                                if let Some(sel) = &self.selected_output_device {
+                                    if !self.output_devices.contains(sel) {
+                                        self.selected_output_device = None;
+                                    }
                                 }
-                            });
+                            }
+                        });
                         ui.add(egui::Slider::new(&mut self.output_gain, 0.0..=4.0).text("Çıkış seviyesi"));
                     });
                 });
