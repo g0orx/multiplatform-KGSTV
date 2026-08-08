@@ -13,6 +13,7 @@
 //! derlenir (egui/eframe).
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -63,7 +64,10 @@ enum DecodeMsg {
     AudioReady { sample_rate: f64, samples: Arc<Vec<f64>> },
     Started { label: String, sample_rate: f64, n_samples: usize },
     Frame(FrameResult),
-    Done { anchor: f64 },
+    /// `frames_this_pass`: BU geçişin (baştan itibaren, `skip_frames`'ten önce) bulduğu toplam
+    /// frame sayısı — anchor'ı önbelleğe alıp almamaya karar vermek için (bkz. `DecodeMsg::Done`
+    /// işleyicisi: 0 ise anchor gerçek bir senkron kilidi değil, önbelleğe ALINMAMALI).
+    Done { anchor: f64, frames_this_pass: usize },
     Error(String),
 }
 
@@ -739,18 +743,24 @@ impl KgstvApp {
                         }
                     }
                 }
-                DecodeMsg::Done { anchor } => {
+                DecodeMsg::Done { anchor, frames_this_pass } => {
                     self.decoding = false;
                     self.last_anchor = Some(anchor);
+                    // Anchor'ı SADECE bu geçiş gerçekten en az bir frame bulduysa önbelleğe al
+                    // (yani gerçek bir senkron kilidiydi) — aksi hâlde `find_sync`'in "en iyi
+                    // eldeki" (ama aslında GEÇERSİZ/gürültü) sonucunu önbelleğe alıp sonsuza
+                    // dek yeniden kullanmış oluruz, bu da GERÇEK bir sinyal gelse bile asla
+                    // senkronlanamamaya yol açar (kullanıcı geri bildirimiyle bulunan bir
+                    // hataydı: "cagri isareti cozmedi ... goruntu hic cozumlemedi"). 0 ise
+                    // önbellek temizlenir ki bir sonraki pas taze bir arama yapsın.
                     if self.wav_sim.is_some() {
                         // Bir sonraki pas bu kadarını sessizce atlayıp sadece yeni frame'leri
-                        // uygulasın (bkz. `maybe_kick_wav_sim_decode`); anchor'ı da önbelleğe al
-                        // ki bir sonraki pas yeniden ARAMA yapmadan doğrudan bunu kullansın.
+                        // uygulasın (bkz. `maybe_kick_wav_sim_decode`).
                         self.wav_sim_frames_applied = self.frames_total;
-                        self.wav_sim_cached_anchor = Some(anchor);
+                        self.wav_sim_cached_anchor = if frames_this_pass > 0 { Some(anchor) } else { None };
                     } else if self.live.is_some() {
                         self.live_frames_applied = self.frames_total;
-                        self.live_cached_anchor = Some(anchor);
+                        self.live_cached_anchor = if frames_this_pass > 0 { Some(anchor) } else { None };
                     }
                     self.status = format!(
                         "Tamamlandı — senkron anchor={anchor:.1} örnek, {} frame, tile: {}/{}",
@@ -798,13 +808,16 @@ fn run_decode(
 
     let tx2 = tx.clone();
     let ctx2 = ctx.clone();
-    let mut seen = 0usize;
+    // `Arc<AtomicUsize>` (basit `let mut seen` DEĞİL): closure `decode_wav_sequential_cb*`'ye
+    // TAŞINDIĞI için, çağrıdan sonra son sayıyı okuyabilmemiz lazım — paylaşımlı bir sayaç şart.
+    let seen = Arc::new(AtomicUsize::new(0));
+    let seen_cb = seen.clone();
     let frame_cb = move |fr| {
-        if seen >= skip_frames {
+        let n = seen_cb.fetch_add(1, Ordering::Relaxed);
+        if n >= skip_frames {
             let _ = tx2.send(DecodeMsg::Frame(fr));
             ctx2.request_repaint();
         }
-        seen += 1;
     };
 
     let anchor = if let Some(a) = known_anchor {
@@ -816,7 +829,8 @@ fn run_decode(
         let coarse_search_len = ((15.0 * sample_rate) as i64).min(samples.len() as i64);
         kgstv_modem::decode_wav_sequential_cb(&samples, sample_rate, coarse_search_len, 5000, frame_cb)
     };
-    let _ = tx.send(DecodeMsg::Done { anchor });
+    let frames_this_pass = seen.load(Ordering::Relaxed);
+    let _ = tx.send(DecodeMsg::Done { anchor, frames_this_pass });
     ctx.request_repaint();
 }
 
