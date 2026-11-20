@@ -63,7 +63,7 @@ original `readme.txt` + real off-air audio recordings (4 different stations: TA4
   `image` crate) to 320×240 and encodes it into 300 JPEG tiles + an optional callsign/text
   (MSK or 4L-FSK modulation selectable), saves it as a WAV or plays it directly through the
   speaker. In both modes an eye diagram is shown for assessing signal quality/timing.
-  A **📻 Radio (TCI)** section in both modes connects to a TCI server (default port 40001),
+  A **📻 Radio (TCI)** section in both modes connects to a TCI server (default port 50001),
   tunes the radio, and lets live decode and transmit use the radio's audio instead of a sound card.
   Single code base for Windows/Linux/macOS.
 

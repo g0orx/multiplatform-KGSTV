@@ -33,8 +33,9 @@ use tungstenite::{Message, WebSocket};
 
 use crate::live::{push_downmixed, resample_linear, CaptureSource, LiveCapture, RingBuffer};
 
-/// Default TCI server port (ExpertSDR, piHPSDR and JTDX all use 40001).
-pub const TCI_DEFAULT_PORT: u16 = 40001;
+/// Default TCI server port. ExpertSDR3 uses 50001; ExpertSDR2 and some other TCI servers use
+/// 40001, which can be entered in the GUI's Port field.
+pub const TCI_DEFAULT_PORT: u16 = 50001;
 /// Sample rate requested for both RX and TX audio streams.
 pub const TCI_AUDIO_SAMPLE_RATE: f64 = 48000.0;
 
