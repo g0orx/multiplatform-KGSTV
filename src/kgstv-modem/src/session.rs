@@ -5,7 +5,7 @@
 
 use crate::filter::bandpass_filtfilt;
 use crate::fsk4::{self, Fsk4Detector};
-use crate::msk::{modulate_msk, ToneClock};
+use crate::msk::{ToneClock, ToneSynth};
 use crate::sync::{find_sync, SYNC_LEN};
 use kgstv_core::constants::{sync_word_bits, PREAMBLE_LEN};
 use kgstv_core::header::InfoChunk;
@@ -317,40 +317,39 @@ pub fn encode_session_audio_cb(
     // Preamble/sync/header are ALWAYS MSK (see protocol_spec.md: "The info chunk is always sent
     // with MSK modulation + convolutional coding, independent of the data chunk's own
     // modulation/coding setting") — only the data chunk is modulated with MSK or 4L-FSK according
-    // to the `hdr.m` field. So we CANNOT accumulate the whole session as one homogeneous bit
-    // sequence and modulate it in one go (MSK and 4L-FSK have different symbol/sample mappings) —
-    // each segment is converted to audio with its own modulator and appended one after another. Phase
-    // is reset at segment boundaries; since neither the `msk::ToneClock` (magnitude-based) nor the
-    // `fsk4::Fsk4Detector` (phase-offset scanning) receivers depend on absolute phase, this does NOT
-    // AFFECT decode accuracy.
+    // to the `hdr.m` field. Both use the same 1200-baud slot clock, so every segment is pushed
+    // into ONE continuous-phase synthesizer (`ToneSynth`) on one exact timeline — no per-segment
+    // sample rounding (which used to slip the stream against the receiver's clock) and no phase
+    // reset between segments.
     let total = frames.len();
-    let mut audio = modulate_msk(&frame::preamble_bits(), sample_rate);
+    let mut synth = ToneSynth::new(sample_rate);
+    synth.push_msk(&frame::preamble_bits());
     for (i, (hdr, data_bits)) in frames.iter().enumerate() {
-        audio.extend(modulate_msk(&frame::sync_bits(), sample_rate));
-        audio.extend(modulate_msk(&frame::encode_header(hdr), sample_rate));
+        synth.push_msk(&frame::sync_bits());
+        synth.push_msk(&frame::encode_header(hdr));
 
         let enc_bits =
             if hdr.c == 1 { frame::encode_data_conv(data_bits) } else { frame::encode_data_norm(data_bits) };
         if hdr.m == 1 {
-            let levels = fsk4::bits_to_levels(&enc_bits);
-            audio.extend(fsk4::modulate_fsk4(&levels, sample_rate));
+            synth.push_fsk4(&fsk4::bits_to_levels(&enc_bits));
         } else {
-            audio.extend(modulate_msk(&enc_bits, sample_rate));
+            synth.push_msk(&enc_bits);
         }
-        on_progress(i + 1, total, audio.len());
+        on_progress(i + 1, total, synth.len());
     }
     // Normal completion: end signal 3 times (see protocol_spec.md, framing rules).
     let end_hdr = InfoChunk { sys: 0, com: Command::End as u8, c: 0, m: 0, x: 0, y: 0, sc: 0, size: 0, crc: 0 };
     for _ in 0..3 {
-        audio.extend(modulate_msk(&frame::sync_bits(), sample_rate));
-        audio.extend(modulate_msk(&frame::encode_header(&end_hdr), sample_rate));
+        synth.push_msk(&frame::sync_bits());
+        synth.push_msk(&frame::encode_header(&end_hdr));
     }
-    audio
+    synth.finish()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::msk::modulate_msk;
 
     /// `decode_wav_sequential_cb_from_anchor`, with the known correct anchor, must give EXACTLY THE
     /// SAME result as the fully searching `decode_wav_sequential_cb` — proving that it is safe for the

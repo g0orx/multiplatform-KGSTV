@@ -21,7 +21,7 @@ pub mod tci;
 
 pub use wav::{load_mono, save_mono, AudioBuffer};
 pub use filter::{bandpass_filtfilt, lowpass_filtfilt};
-pub use msk::{modulate_msk, ToneClock, BAUD, MSK_FREQS};
+pub use msk::{modulate_msk, ToneClock, ToneSynth, BAUD, MSK_FREQS};
 pub use fsk4::{bits_to_levels, levels_to_bits, modulate_fsk4, Fsk4Detector};
 pub use discriminator::instantaneous_freq;
 pub use sync::{find_sync, sync_err, SYNC_LEN};

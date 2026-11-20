@@ -14,20 +14,81 @@ use std::f64::consts::PI;
 pub const BAUD: f64 = 1200.0;
 pub const MSK_FREQS: [f64; 2] = [1200.0, 1800.0];
 
+/// Continuous-phase tone synthesizer on an exact 1200-baud timeline, shared by the MSK and
+/// 4L-FSK modulators and by the session encoder.
+///
+/// Each 1200-baud slot is one tone (MSK bit or 4L-FSK symbol). Slot `k` covers the continuous time
+/// `[k/BAUD, (k+1)/BAUD)`; every output sample `n` is placed at its EXACT time `n/sample_rate` and
+/// the phase is evaluated there, so:
+/// - the phase advances by exactly `2π·f/BAUD` per slot (the ideal CPM trellis), even when a slot
+///   is not a whole number of samples (44.1 kHz = 36.75 samples/slot);
+/// - consecutive segments (sync, header, data, ...) pushed into the same synthesizer share one
+///   timeline, so there is no per-segment rounding — previously each segment was modulated
+///   separately and rounded to whole samples, which slipped the stream against the receiver's
+///   `anchor + slot×tb` clock by ~0.25 samples per frame (≈ 2 symbols over a 300-tile image), and
+///   per-sample phase accumulation drifted 4L-FSK off its trellis over long chunks. Both made
+///   large 4L-FSK image tiles fail CRC even on a perfectly clean WAV from our own TX.
+/// - phase is continuous across segment boundaries, as in real KG-STV transmissions.
+pub struct ToneSynth {
+    sample_rate: f64,
+    slot: usize,
+    phase_at_slot: f64,
+    out: Vec<f64>,
+}
+
+impl ToneSynth {
+    pub fn new(sample_rate: f64) -> Self {
+        ToneSynth { sample_rate, slot: 0, phase_at_slot: 0.0, out: Vec::new() }
+    }
+
+    /// Appends one slot (1/BAUD seconds) of a tone at `freq` Hz.
+    pub fn push(&mut self, freq: f64) {
+        let slot_start = self.slot as f64 / BAUD;
+        let slot_end = (self.slot + 1) as f64 / BAUD;
+        loop {
+            let t = self.out.len() as f64 / self.sample_rate;
+            if t >= slot_end {
+                break;
+            }
+            self.out.push((self.phase_at_slot + 2.0 * PI * freq * (t - slot_start)).cos());
+        }
+        self.phase_at_slot = (self.phase_at_slot + 2.0 * PI * freq / BAUD).rem_euclid(2.0 * PI);
+        self.slot += 1;
+    }
+
+    /// Appends MSK bits (0 → 1200 Hz, 1 → 1800 Hz).
+    pub fn push_msk(&mut self, bits: &[u8]) {
+        for &b in bits {
+            self.push(MSK_FREQS[(b & 1) as usize]);
+        }
+    }
+
+    /// Appends 4L-FSK levels (0..4 → 1200/1400/1600/1800 Hz).
+    pub fn push_fsk4(&mut self, levels: &[u8]) {
+        for &l in levels {
+            self.push(kgstv_core::constants::FSK4_FREQS[(l as usize).min(3)]);
+        }
+    }
+
+    /// Number of samples produced so far.
+    pub fn len(&self) -> usize {
+        self.out.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.out.is_empty()
+    }
+
+    pub fn finish(self) -> Vec<f64> {
+        self.out
+    }
+}
+
 /// Converts raw bits (0/1) into MSK audio samples (-1.0..1.0, mono). `sample_rate`: Hz.
 pub fn modulate_msk(bits: &[u8], sample_rate: f64) -> Vec<f64> {
-    let tb = sample_rate / BAUD;
-    let n_samples = ((bits.len() as f64) * tb).round().max(0.0) as usize;
-    let mut out = Vec::with_capacity(n_samples);
-    let mut phase = 0.0f64;
-    for n in 0..n_samples {
-        let bit_idx = ((n as f64) / tb).floor() as usize;
-        let bit = *bits.get(bit_idx).unwrap_or(&0);
-        let freq = MSK_FREQS[bit as usize];
-        phase += 2.0 * PI * freq / sample_rate;
-        out.push(phase.cos());
-    }
-    out
+    let mut synth = ToneSynth::new(sample_rate);
+    synth.push_msk(bits);
+    synth.finish()
 }
 
 /// Helper that makes symbol-level bit decisions on filtered audio samples.

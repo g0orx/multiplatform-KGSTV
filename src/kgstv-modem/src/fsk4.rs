@@ -64,18 +64,11 @@ pub fn levels_to_bits(levels: &[u8]) -> Vec<u8> {
 /// Converts levels (0..4) into true continuous-phase 4L-FSK audio samples (-1.0..1.0, mono) —
 /// the 4-level version of the same formula as `msk::modulate_msk`.
 pub fn modulate_fsk4(levels: &[u8], sample_rate: f64) -> Vec<f64> {
-    let tb = sample_rate / BAUD;
-    let n_samples = ((levels.len() as f64) * tb).round().max(0.0) as usize;
-    let mut out = Vec::with_capacity(n_samples);
-    let mut phase = 0.0f64;
-    for n in 0..n_samples {
-        let sym_idx = ((n as f64) / tb).floor() as usize;
-        let level = *levels.get(sym_idx).unwrap_or(&0) as usize;
-        let freq = FSK4_FREQS[level.min(3)];
-        phase += 2.0 * PI * freq / sample_rate;
-        out.push(phase.cos());
-    }
-    out
+    // Exact-time continuous-phase synthesis (see `msk::ToneSynth`): every symbol advances the
+    // phase by exactly `level×60°` at any sample rate, keeping the signal on the 6-state trellis.
+    let mut synth = crate::msk::ToneSynth::new(sample_rate);
+    synth.push_fsk4(levels);
+    synth.finish()
 }
 
 /// Demodulator that decides a 4L-FSK symbol sequence with Maximum-Likelihood Sequence Detection
@@ -112,9 +105,15 @@ impl<'a> Fsk4Detector<'a> {
     /// (0..6, units of 60°) + global phase offset `phase_offset` — the maximum-likelihood branch metric
     /// under AWGN (since all hypotheses have equal energy there is no need to subtract a constant
     /// energy term; the argmax does not change).
-    fn branch_metric(&self, a: usize, b: usize, state: usize, level: usize, phase_offset: f64) -> f64 {
+    ///
+    /// `t_start` is the symbol's exact (fractional) start position in samples; the window starts at
+    /// the rounded sample `a`, so the reference phase is advanced by the sub-sample difference to
+    /// keep it aligned with the true trellis phase at `a`.
+    fn branch_metric(&self, a: usize, b: usize, t_start: f64, state: usize, level: usize, phase_offset: f64) -> f64 {
         let freq = FSK4_FREQS[level];
-        let mut phase = state as f64 * (2.0 * PI / N_STATES as f64) + phase_offset;
+        let mut phase = state as f64 * (2.0 * PI / N_STATES as f64)
+            + phase_offset
+            + 2.0 * PI * freq * (a as f64 - t_start) / self.sample_rate;
         let mut acc = 0.0f64;
         for &x in &self.data[a..b] {
             acc += x * phase.cos();
@@ -143,6 +142,7 @@ impl<'a> Fsk4Detector<'a> {
 
         for k in 0..n_symbols {
             let (a, b) = self.window(t0, start_index + k as i64);
+            let t_start = t0 + (start_index + k as i64) as f64 * self.tb;
             let mut new_metric = [NEG_INF; N_STATES];
             let mut new_survivor = [(0u8, 0u8); N_STATES];
             for s in 0..N_STATES {
@@ -151,7 +151,7 @@ impl<'a> Fsk4Detector<'a> {
                 }
                 for level in 0..N_LEVELS {
                     let next = (s + level) % N_STATES;
-                    let bm = self.branch_metric(a, b, s, level, phase_offset);
+                    let bm = self.branch_metric(a, b, t_start, s, level, phase_offset);
                     let m = path_metric[s] + bm;
                     if m > new_metric[next] {
                         new_metric[next] = m;
@@ -259,5 +259,27 @@ mod tests {
             }
         }
         assert!(any_exact, "none of the 12 phase-offset scans matched exactly");
+    }
+
+    /// Regression test: at sample rates where a symbol is not a whole number of samples (44.1 kHz
+    /// = 36.75 samples/symbol, 11.025 kHz = 9.1875), the modulator used to accumulate phase per
+    /// sample, which drifted off the CPM trellis over long chunks — large image tiles then failed
+    /// CRC even on a clean WAV saved by our own TX.
+    #[test]
+    fn long_chunk_roundtrip_at_fractional_samples_per_symbol() {
+        let mut seed = 0x1234_5678u64;
+        let levels: Vec<u8> = (0..4000)
+            .map(|_| {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((seed >> 33) % 4) as u8
+            })
+            .collect();
+        for sr in [44100.0, 11025.0, 48000.0] {
+            let audio = modulate_fsk4(&levels, sr);
+            let detector = Fsk4Detector::new(&audio, sr);
+            let decoded = detector.decode_symbols(0.0, 0, levels.len(), 0.0);
+            let errors = decoded.iter().zip(&levels).filter(|(a, b)| a != b).count();
+            assert_eq!(errors, 0, "sr={sr}: {errors} symbol errors over {} symbols", levels.len());
+        }
     }
 }
