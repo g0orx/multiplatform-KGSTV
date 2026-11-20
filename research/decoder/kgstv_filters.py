@@ -1,18 +1,18 @@
 """
-kgstv.exe'den (radare2 disassembly ile) çıkarılan GERÇEK FIR filtre katsayıları.
+REAL FIR filter coefficients extracted from kgstv.exe (via radare2 disassembly).
 
-Fonksiyon @0x4033e8 (waveIn callback), radare2 ile: ses girişi callback'i şu zinciri uygular:
-  1. int16 PCM örnekleri double'a çevrilir (44100 Hz)
-  2. FILTER1 (51-tap, anti-alias lowpass) ile filtrelenir
-  3. 4'e böler (decimate) -> 11025 Hz
-  4. FILTER2 (51-tap, ~900-2000Hz bandpass, KG-STV ton bandını seçer) ile filtrelenir
-  5. (ötesi henüz tam çıkarılmadı — sembol zamanlama/karar mantığı)
+Function @0x4033e8 (waveIn callback), via radare2: the audio input callback applies this chain:
+  1. int16 PCM samples are converted to double (44100 Hz)
+  2. filtered with FILTER1 (51-tap, anti-alias lowpass)
+  3. divided by 4 (decimate) -> 11025 Hz
+  4. filtered with FILTER2 (51-tap, ~900-2000Hz bandpass, selects the KG-STV tone band)
+  5. (the rest not fully extracted yet — symbol timing/decision logic)
 
-Bulunma yeri: kgstv.exe dosya offset 841240 (FILTER1) ve 841648 (FILTER2),
-her biri 51 x 8-byte little-endian double, ardışık.
+Location: kgstv.exe file offset 841240 (FILTER1) and 841648 (FILTER2),
+each 51 x 8-byte little-endian doubles, consecutive.
 """
 
-# 51-tap, merkez katsayı 0.5 — anti-alias / decimasyon öncesi lowpass (44100Hz'de çalışıyor)
+# 51-tap, centre coefficient 0.5 — anti-alias / pre-decimation lowpass (runs at 44100Hz)
 FILTER1 = [
     0.00188395336, -3.57324275e-18, -0.00305968932, 1.85021074e-17, 0.00458956204,
     -6.74764434e-18, -0.00654922183, 8.50952068e-18, 0.0090416337, -1.03180314e-17,
@@ -26,7 +26,7 @@ FILTER1 = [
     0.00458956204, 1.85021074e-17, -0.00305968932, -3.57324275e-18, 0.00188395336,
 ]
 
-# 51-tap, merkez katsayı 1/3 — kanal-seçici bandpass (~900-2000Hz @ 11025Hz), decimasyon sonrası
+# 51-tap, centre coefficient 1/3 — channel-selecting bandpass (~900-2000Hz @ 11025Hz), after decimation
 FILTER2 = [
     0.000183556493, -4.58719924e-19, -0.000530567958, 4.75300479e-18, 0.00225312673,
     0.00378769117, 0.00206474048, 1.54424232e-33, 0.00345920986, 0.0107074434,
@@ -46,7 +46,7 @@ NATIVE_SAMPLE_RATE = 44100
 DECIMATED_SAMPLE_RATE = NATIVE_SAMPLE_RATE / DECIMATION_FACTOR  # 11025
 
 
-# 51-tap, merkez katsayı 0.0, tam antisimetrik — Hilbert dönüştürücü (quadrature/imag bileşen üretir)
+# 51-tap, centre coefficient 0.0, fully antisymmetric — Hilbert transformer (produces the quadrature/imag component)
 FILTER3 = [
     -0.00589720752, -4.0817023e-19, -0.00592987191, 3.01571897e-16, -0.00882375805,
     2.61318234e-16, -0.0125953651, 3.95410658e-16, -0.017460947, 5.61850573e-17,
@@ -60,7 +60,7 @@ FILTER3 = [
     0.00882375805, -3.01571897e-16, 0.00592987191, 4.0817023e-19, 0.00589720752,
 ]
 
-# 51-tap, merkez katsayı 0.125, simetrik lowpass — anlık frekans kestiriminin son yumuşatması
+# 51-tap, centre coefficient 0.125, symmetric lowpass — final smoothing of the instantaneous frequency estimate
 FILTER4 = [
     -9.9340058e-05, 1.72019972e-19, 0.00028714131, 0.000792037935, 0.00147192597,
     0.00218682451, 0.00269771345, 0.00269676853, 0.00187211088, -1.51408991e-18,
@@ -74,17 +74,17 @@ FILTER4 = [
     0.00147192597, 0.000792037935, 0.00028714131, 1.72019972e-19, -9.9340058e-05,
 ]
 
-# Faz açma (unwrap) sabiti — assembly'de tam olarak bulundu: 0x403bc4 = 2π
+# Phase unwrap constant — found exactly in the assembly: 0x403bc4 = 2π
 TWO_PI = 6.283185307179586
 
 
 def apply_authentic_discriminator(samples_44100):
-    """Tam RX zincirini (4 filtre + Hilbert + faz-farkı) uygular.
-    Girdi: 44100Hz mono float dizisi. Çıktı: (11025Hz'de anlık frekans dizisi, Hz).
-    NOT: Bu implementasyon mimariyi doğru şekilde yansıtıyor (kgstv.exe disassembly'sinden),
-    ancak Hilbert işaret kuralı / faz yönü tam olarak assembly ile bit-eşleşmiyor —
-    basit karmaşık-mixing yaklaşımı (kgstv_decode.fsk_discriminator) hâlâ daha güvenilir.
-    Bkz. docs/protocol_spec.md, '4L-FSK' bölümü.
+    """Applies the full RX chain (4 filters + Hilbert + phase difference).
+    Input: 44100Hz mono float array. Output: (instantaneous frequency array at 11025Hz, Hz).
+    NOTE: This implementation reflects the architecture correctly (from the kgstv.exe disassembly),
+    but the Hilbert sign convention / phase direction does not bit-match the assembly exactly —
+    the simple complex-mixing approach (kgstv_decode.fsk_discriminator) is still more reliable.
+    See docs/protocol_spec.md, '4L-FSK' section.
     """
     from scipy.signal import lfilter
     import numpy as np
@@ -99,8 +99,8 @@ def apply_authentic_discriminator(samples_44100):
 
 
 def apply_authentic_frontend(samples_44100):
-    """kgstv.exe'nin gerçek ön-uç filtre zincirini uygular. Girdi: 44100Hz mono float dizisi.
-    Çıktı: (11025Hz'e decimate edilmiş, bandpass filtrelenmiş sinyal)."""
+    """Applies kgstv.exe's real front-end filter chain. Input: 44100Hz mono float array.
+    Output: (signal decimated to 11025Hz, bandpass filtered)."""
     from scipy.signal import lfilter
     f1 = lfilter(FILTER1, [1.0], samples_44100)
     dec = f1[::DECIMATION_FACTOR]

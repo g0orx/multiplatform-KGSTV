@@ -1,92 +1,93 @@
-# Atölye m-KGSTV — Cross-Platform Yeniden Yazım
+# Atölye m-KGSTV — Cross-Platform Rewrite
 
-**Amaç:** JJ0OBZ (K.G., Niigata-Myoko, Japonya) tarafından yazılan, sadece Windows'ta çalışan
-**KG-STV** (dijital SSTV) yazılımının; Windows, Linux, macOS ve (mümkünse) iOS/Android'de
-çalışan, havadaki orijinal KG-STV istasyonlarıyla uyumlu bir yeniden yazımını yapmak.
+**Goal:** to produce a rewrite of the Windows-only **KG-STV** (digital SSTV) software written by
+JJ0OBZ (K.G., Niigata-Myoko, Japan) that runs on Windows, Linux, macOS and (if possible)
+iOS/Android, and is compatible with original KG-STV stations on the air.
 
-## Durum
+## Status
 
-Protokol, orijinal `readme.txt` çevirisi + gerçek off-air ses kayıtları (4 farklı istasyon:
-TA4SO, TA2VB, DL4CQ + kontrollü OH2UDS test kayıtları) üzerinde bit-seviyesinde ters
-mühendislikle **doğrulandı**. Ayrıntılar: [`docs/protocol_spec.md`](docs/protocol_spec.md).
+The protocol has been **verified** by bit-level reverse engineering against a translation of the
+original `readme.txt` + real off-air audio recordings (4 different stations: TA4SO, TA2VB, DL4CQ
++ controlled OH2UDS test recordings). Details: [`docs/protocol_spec.md`](docs/protocol_spec.md).
 
-| Katman | Durum |
+| Layer | Status |
 |---|---|
-| Framing (preamble/sync/frame-walk) | ✅ Gerçek kayıtla doğrulandı |
-| Konvolüsyonel kod (K=7, 171/133 oktal) | ✅ Doğrulandı, Rust'ta implement edildi |
-| Whitening (127-bit M-sequence) | ✅ Doğrulandı, Rust'ta implement edildi |
-| CRC (CRC-16/AUG-CCITT) | ✅ Doğrulandı, Rust'ta implement edildi |
-| MSK demodülasyon | ✅ Üretim kalitesinde (Python), gerçek istasyonlarla doğrulandı |
-| JPEG Huffman/entropy tabloları | ✅ Standart tablolar bit-uyumlu doğrulandı |
-| JPEG kuantizasyon ölçeği (`sc`→scale) | ✅ Çözüldü — `sc` doğrudan IJG quality (1-100) |
-| JPEG blok içi DC kodlama | ✅ Kritik hata bulundu ve düzeltildi (6 blok birbirine zincirlenmez) |
-| **Rust JPEG codec** (`kgstv-core::jpeg`) | ✅ Encode+decode, gerçek kayıt verisiyle doğrulandı |
-| **Rust ses I/O + MSK modülatör/demodülatör** (`kgstv-modem`) | ✅ Uçtan uca doğrulandı: gerçek OH2UDS MSK kaydında 300/300 tile, sıfır bit hatasıyla decode edildi |
-| **4L-FSK MLSD/Viterbi demodülatörü** (`kgstv-modem::fsk4`) | ✅ Çözüldü — 6 durumlu CPM faz-trellis Viterbi + ince zamanlama kayması taraması; gerçek kayıtta %96-99.7 tile başarı oranı (önceki ~%80 sembol-doğruluğu tıkanmasından büyük sıçrama) |
-| **Masaüstü GUI** (`kgstv-gui`, egui/eframe) | ✅ Win/Linux/macOS tek kod tabanı — **RX**: WAV aç, ilerlemeli tile çizimi, frame günlüğü, canlı (mikrofon) decode, göz diyagramı, MSK+4L-FSK otomatik; **TX**: resim/metin gönder (MSK ya da 4L-FSK), WAV kaydet veya hoparlörden çal |
-| iOS/Android UI | ⏳ Henüz başlanmadı |
+| Framing (preamble/sync/frame-walk) | ✅ Verified against a real recording |
+| Convolutional code (K=7, 171/133 octal) | ✅ Verified, implemented in Rust |
+| Whitening (127-bit M-sequence) | ✅ Verified, implemented in Rust |
+| CRC (CRC-16/AUG-CCITT) | ✅ Verified, implemented in Rust |
+| MSK demodulation | ✅ Production quality (Python), verified with real stations |
+| JPEG Huffman/entropy tables | ✅ Standard tables verified bit-compatible |
+| JPEG quantization scale (`sc`→scale) | ✅ Solved — `sc` is directly the IJG quality (1-100) |
+| JPEG intra-block DC coding | ✅ Critical bug found and fixed (the 6 blocks are not chained to each other) |
+| **Rust JPEG codec** (`kgstv-core::jpeg`) | ✅ Encode+decode, verified with real recording data |
+| **Rust audio I/O + MSK modulator/demodulator** (`kgstv-modem`) | ✅ Verified end to end: 300/300 tiles decoded with zero bit errors from a real OH2UDS MSK recording |
+| **4L-FSK MLSD/Viterbi demodulator** (`kgstv-modem::fsk4`) | ✅ Solved — 6-state CPM phase-trellis Viterbi + fine timing-shift scan; 96-99.7% tile success rate on real recordings (a big leap from the earlier ~80% symbol-accuracy bottleneck) |
+| **Desktop GUI** (`kgstv-gui`, egui/eframe) | ✅ Single code base for Win/Linux/macOS — **RX**: open WAV, progressive tile drawing, frame log, live (microphone) decode, eye diagram, MSK+4L-FSK automatic; **TX**: send image/text (MSK or 4L-FSK), save as WAV or play through the speaker |
+| iOS/Android UI | ⏳ Not started yet |
 
-## Dizin Yapısı
+## Directory Structure
 
-- `docs/` — araştırma ve protokol dokümantasyonu
-  - `research.md` — web araştırması bulguları
-  - `protocol_spec.md` — **otoriter kaynak**: tam protokol spesifikasyonu + doğrulama kayıtları
-  - `HISTORY.md`, `OVERVIEW_EN.md`, `kgstv-protocol-reference.html` — İngilizce tarihçe/teknik özet
-- `research/` — ters mühendislik çalışma alanı
-  - `binaries/` — orijinal `kgstv.zip` (KGSTV.exe, readme'ler, kgstv.ini)
-  - `sampleaudio/` — sentetik test kayıtları (MSK/4LFSK, Norm/Convolution, farklı JPEG scale)
-  - `decoder/` — Python prototip decoder:
-    - `kgstv_decode.py`, `tone_demod.py` — düşük seviye demod/framing yardımcıları
-    - `decode_session.py` — **ana araç**: bir WAV kaydını baştan sona decode edip PNG üretir
-    - `jpeg_block.py` — JPEG 16×16 blok decode referans implementasyonu (Python)
-    - `kgstv_filters.py` — `kgstv.exe`'den disassembly ile çıkarılan gerçek FIR filtreleri
-- `samples/` — gerçek off-air kayıtlar (TA4SO, TA2VB, DL4CQ) ve kontrollü test kayıtları
-  (OH2UDS), referans görüntüleriyle birlikte
-  - `samples/decoded/` — decode edilen çıktı PNG'leri
-- `src/kgstv-core/` — Rust çekirdek kütüphane (cargo workspace üyesi), platform-bağımsız
-  protokol implementasyonu: framing, konvolüsyonel kod, whitening, CRC, header, **JPEG codec**
-- `src/kgstv-modem/` — Rust ses katmanı (cargo workspace üyesi, `kgstv-core` üzerine inşa
-  edilir): WAV I/O (`wav`), bant-geçiren ön-filtre (`filter`), gerçek sürekli-faz MSK
-  modülasyon/demodülasyon + ton-korelasyonu bit algılama (`msk`), **4L-FSK MLSD/Viterbi
-  modülasyon/demodülasyon** (`fsk4` — 6 durumlu CPM faz-trellis), senkron kelimesi arama
-  (`sync`), üst seviye TX/RX oturum API'si (`session`, header/senkron her zaman MSK + veri
-  chunk'ı `hdr.m`'ye göre MSK/4L-FSK otomatik, ilerleme callback'li encode dahil), varsayılan
-  mikrofon/soundcard'dan sürekli örnek yakalama + hoparlörden çalma (`live`, `cpal` üzerinden).
-  `examples/decode_wav.rs`: bir WAV dosyasını uçtan uca decode edip PPM görüntü üreten CLI aracı.
-- `src/kgstv-gui/` — masaüstü GUI (cargo workspace üyesi, egui/eframe), RX ve TX modları:
-  **RX** — WAV dosyası aç (native dosya seçici, `rfd`) ya da canlı (mikrofon) decode başlat,
-  arka planda `kgstv-modem` ile decode et (MSK/4L-FSK otomatik ayırt edilir), tile'ları geldikçe
-  canlı çiz, frame günlüğünü göster; **TX** — bir resim dosyası (`image` crate ile
-  PNG/JPEG/GIF/BMP) 320×240'a ölçekleyip 300 tile JPEG'e + isteğe bağlı çağrı işareti/metine
-  encode eder (MSK ya da 4L-FSK modülasyonu seçilebilir), WAV olarak kaydeder ya da doğrudan
-  hoparlörden çalar. Her iki modda sinyal kalitesi/zamanlamasını değerlendirmek için göz
-  diyagramı (eye diagram) gösterilir. Windows/Linux/macOS için tek kod tabanı.
+- `docs/` — research and protocol documentation
+  - `research.md` — web research findings
+  - `protocol_spec.md` — **authoritative source**: full protocol specification + verification records
+  - `HISTORY.md`, `OVERVIEW_EN.md`, `kgstv-protocol-reference.html` — English history/technical overview
+- `research/` — reverse-engineering workspace
+  - `binaries/` — the original `kgstv.zip` (KGSTV.exe, readmes, kgstv.ini)
+  - `sampleaudio/` — synthetic test recordings (MSK/4LFSK, Norm/Convolution, different JPEG scales)
+  - `decoder/` — Python prototype decoder:
+    - `kgstv_decode.py`, `tone_demod.py` — low-level demod/framing helpers
+    - `decode_session.py` — **main tool**: decodes a WAV recording from start to finish and produces a PNG
+    - `jpeg_block.py` — JPEG 16×16 block decode reference implementation (Python)
+    - `kgstv_filters.py` — real FIR filters extracted from `kgstv.exe` by disassembly
+- `samples/` — real off-air recordings (TA4SO, TA2VB, DL4CQ) and controlled test recordings
+  (OH2UDS), together with reference images
+  - `samples/decoded/` — decoded output PNGs
+- `src/kgstv-core/` — Rust core library (cargo workspace member), platform-independent
+  protocol implementation: framing, convolutional code, whitening, CRC, header, **JPEG codec**
+- `src/kgstv-modem/` — Rust audio layer (cargo workspace member, built on top of
+  `kgstv-core`): WAV I/O (`wav`), band-pass pre-filter (`filter`), true continuous-phase MSK
+  modulation/demodulation + tone-correlation bit detection (`msk`), **4L-FSK MLSD/Viterbi
+  modulation/demodulation** (`fsk4` — 6-state CPM phase trellis), sync-word search
+  (`sync`), top-level TX/RX session API (`session`; header/sync always MSK + data chunk
+  MSK/4L-FSK automatically according to `hdr.m`, including encoding with a progress callback),
+  continuous sample capture from the default microphone/soundcard + playback through the speaker
+  (`live`, via `cpal`).
+  `examples/decode_wav.rs`: a CLI tool that decodes a WAV file end to end and produces a PPM image.
+- `src/kgstv-gui/` — desktop GUI (cargo workspace member, egui/eframe), RX and TX modes:
+  **RX** — open a WAV file (native file picker, `rfd`) or start live (microphone) decoding,
+  decode in the background with `kgstv-modem` (MSK/4L-FSK detected automatically), draw tiles
+  live as they arrive, show the frame log; **TX** — scales an image file (PNG/JPEG/GIF/BMP via the
+  `image` crate) to 320×240 and encodes it into 300 JPEG tiles + an optional callsign/text
+  (MSK or 4L-FSK modulation selectable), saves it as a WAV or plays it directly through the
+  speaker. In both modes an eye diagram is shown for assessing signal quality/timing.
+  Single code base for Windows/Linux/macOS.
 
-## Geliştirme
+## Development
 
 ```sh
-# Rust çekirdeğini (+ modem katmanını) test et
+# Test the Rust core (+ modem layer)
 cargo test --workspace
 
-# Rust CLI: gerçek/sentetik bir MSK WAV kaydını uçtan uca decode et (PPM görüntü üretir)
-cargo run -p kgstv-modem --release --example decode_wav -- samples/<kayit>.wav çıktı.ppm
+# Rust CLI: decode a real/synthetic MSK WAV recording end to end (produces a PPM image)
+cargo run -p kgstv-modem --release --example decode_wav -- samples/<recording>.wav output.ppm
 
-# Masaüstü GUI'yi çalıştır
+# Run the desktop GUI
 cargo run -p kgstv-gui --release
 
-# Python prototip decoder: bir WAV kaydını PNG'ye decode et
+# Python prototype decoder: decode a WAV recording to PNG
 cd research && source venv/bin/activate
-python3 decoder/decode_session.py ../samples/<kayit>.wav ../samples/decoded/<cikti>.png
+python3 decoder/decode_session.py ../samples/<recording>.wav ../samples/decoded/<output>.png
 ```
 
-## Sonraki Adımlar
+## Next Steps
 
-Bkz. proje görev listesi ve `docs/protocol_spec.md`'nin ilgili bölümleri:
-1. `kgstv-modem::session`'daki ardışık (sıralı) frame yürüyüşünü, gürültülü gerçek off-air
-   kayıtlar için `decode_session.py`'deki bağımsız-aday-tarama yaklaşımına taşı (uzun/gürültülü
-   kayıtlarda senkron kaybında sıralı yürüyüş durur)
-2. 4L-FSK'nin kalan birkaç tile hatası (287-299/300, muhtemelen gerçek kanal gürültüsü) için
-   daha geniş/ince faz+zamanlama taraması ya da yumuşak-karar (soft-decision) CRC/CONV
-   birleşimi denenebilir — kısmi iyileştirme, blokaj değil
-3. iOS/Android UI (egui zaten Android/iOS derlemesini destekliyor — masaüstü kod tabanı taşınabilir
-   olmalı; platform-özel ses I/O entegrasyonu ayrıca gerekir)
+See the project task list and the relevant sections of `docs/protocol_spec.md`:
+1. Port the sequential frame walk in `kgstv-modem::session` to the independent-candidate scanning
+   approach of `decode_session.py` for noisy real off-air recordings (on long/noisy recordings
+   the sequential walk stops on loss of sync)
+2. For 4L-FSK's few remaining tile errors (287-299/300, probably real channel noise), a
+   wider/finer phase+timing scan or a soft-decision CRC/CONV combination could be tried
+   — a partial improvement, not a blocker
+3. iOS/Android UI (egui already supports Android/iOS builds — the desktop code base should be
+   portable; platform-specific audio I/O integration is needed separately)

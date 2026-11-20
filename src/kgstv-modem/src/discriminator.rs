@@ -1,30 +1,30 @@
-//! Anlık frekans (instantaneous frequency) discriminator: bir CPFSK/FM sinyalinin taşıdığı
-//! frekansı örnek-örnek doğrudan tahmin eder — matched-filter/korelasyon tabanlı yöntemlerin
-//! aksine (bkz. `msk::ToneClock::soft_metric_at`), sembol içinde DÜZ bir plato ve sembol
-//! sınırlarında KESKİN bir geçiş üretir; bu, klasik osiloskop göz diyagramı görünümü
-//! (düz üst/alt "raylar" + net kesişim noktaları) için gereken sinyal türüdür — bir matched-
-//! filter korelasyonunun ürettiği yumuşatılmış/sinüsvari eğriler DEĞİL.
+//! Instantaneous frequency discriminator: directly estimates, sample by sample, the frequency
+//! carried by a CPFSK/FM signal — unlike matched-filter/correlation-based methods
+//! (see `msk::ToneClock::soft_metric_at`), it produces a FLAT plateau within a symbol and a
+//! SHARP transition at symbol boundaries; this is the kind of signal needed for the classic
+//! oscilloscope eye-diagram look (flat upper/lower "rails" + clear crossing points) — NOT the
+//! smoothed/sinusoidal curves produced by a matched-filter correlation.
 //!
-//! `kgstv.exe`'nin gerçek RX zincirinde kullandığı Hilbert-transform tabanlı FM discriminator
-//! ile aynı ailede (disassembly ile doğrulanmış — bkz. docs/protocol_spec.md, "RX zincirinin
-//! tam mimarisi").
+//! Same family as the Hilbert-transform-based FM discriminator that `kgstv.exe` uses in its real
+//! RX chain (verified by disassembly — see docs/protocol_spec.md, "Full architecture of the
+//! RX chain").
 
 use std::f64::consts::PI;
 
 use crate::filter::lowpass_filtfilt;
 
-/// `samples`'in `center_freq` (Hz) civarındaki anlık frekansını, örnek başına bir değer olarak
-/// (Hz cinsinden mutlak frekans) döndürür.
+/// Returns the instantaneous frequency of `samples` around `center_freq` (Hz), as one value
+/// per sample (absolute frequency in Hz).
 ///
-/// `lp_cutoff`: baseband alçak geçiren kesim frekansı — beklenen azami sapmadan (KG-STV için
-/// ±300Hz) büyük olmalı ki gerçek frekans içeriği bastırılmasın, ama komşu sembollerin/gürültünün
-/// sızıntısını bastıracak kadar dar olmalı. KG-STV'nin 1200 baud'u için ~400-500Hz iyi çalışıyor.
+/// `lp_cutoff`: baseband low-pass cutoff frequency — must be larger than the expected maximum
+/// deviation (±300Hz for KG-STV) so the real frequency content is not suppressed, but narrow
+/// enough to suppress leakage from neighbouring symbols/noise. ~400-500Hz works well for KG-STV's 1200 baud.
 pub fn instantaneous_freq(samples: &[f64], sample_rate: f64, center_freq: f64, lp_cutoff: f64) -> Vec<f64> {
     let n = samples.len();
     if n == 0 {
         return Vec::new();
     }
-    // Baseband'e indir (kompleks karıştırma): x[n] * e^{-j2π·fc·n/fs}
+    // Mix down to baseband (complex mixing): x[n] * e^{-j2π·fc·n/fs}
     let mut re = vec![0.0f64; n];
     let mut im = vec![0.0f64; n];
     for i in 0..n {
@@ -35,19 +35,19 @@ pub fn instantaneous_freq(samples: &[f64], sample_rate: f64, center_freq: f64, l
     let re_f = lowpass_filtfilt(&re, sample_rate, lp_cutoff);
     let im_f = lowpass_filtfilt(&im, sample_rate, lp_cutoff);
 
-    // Genlik geçidi (magnitude gating): karmaşık baseband |z[n]| küçükken (ör. gerçek kayıtlarda
-    // ara sıra oluşan derin sönümlenme/gürültü anları) ardışık-örnek faz farkı SAYISAL OLARAK
-    // KARARSIZ hâle gelir — küçük bir gürültü, atan2'yi rastgele bir açıya sıçratıp göz
-    // diyagramında merkez frekansta sahte bir yığılma ve uçlarda gürültülü sıçramalar üretir
-    // (gerçek kayıtlarla doğrulandı). Ortalama genliğin bir kısmının altına düşen örneklerde
-    // son geçerli frekansı korumak bu kararsızlığı büyük ölçüde gideriyor — klasik dijital FM
-    // discriminator tasarımlarında standart bir teknik.
+    // Magnitude gating: when the complex baseband |z[n]| is small (e.g. moments of deep fading/noise
+    // that occasionally occur in real recordings) the consecutive-sample phase difference becomes
+    // NUMERICALLY UNSTABLE — a little noise makes atan2 jump to a random angle, producing a spurious
+    // pile-up at the centre frequency and noisy spikes at the extremes of the eye diagram
+    // (verified with real recordings). Holding the last valid frequency for samples that drop below
+    // a fraction of the mean magnitude largely removes this instability — a standard technique in
+    // classic digital FM discriminator designs.
     let mags: Vec<f64> = re_f.iter().zip(im_f.iter()).map(|(&r, &i)| (r * r + i * i).sqrt()).collect();
     let mean_mag = mags.iter().sum::<f64>() / mags.len().max(1) as f64;
     let gate = mean_mag * 0.3;
 
-    // Ardışık örnek faz farkı (unwrap gerektirmeyen, sağlam yöntem):
-    // freq[n] = fc + fs/(2π) · açı(z[n]·conj(z[n-1]))
+    // Consecutive-sample phase difference (robust method, no unwrap needed):
+    // freq[n] = fc + fs/(2π) · angle(z[n]·conj(z[n-1]))
     let mut freq = vec![center_freq; n];
     for i in 1..n {
         if mags[i] < gate || mags[i - 1] < gate {
@@ -70,22 +70,22 @@ mod tests {
     #[test]
     fn tracks_known_msk_frequencies() {
         let sr = 44100.0;
-        // Uzun tek-seviye koşular + her iki uçta bolca dolgu sembolü: `lowpass_filtfilt`
-        // (ileri+geri) sinyalin gerçek başı/sonu yakınında geçici (settling) durumda olur —
-        // bunu ölçtüğümüz sembollerden uzak tutmak için tamponun her iki ucuna da fazladan
-        // sembol ekliyoruz (kısa/dolgusuz bir tamponda ölçüm, geçerli bir demodülatör
-        // hatası değil, salt bir kenar-etkisi test artefaktı verirdi).
+        // Long single-level runs + plenty of padding symbols at both ends: `lowpass_filtfilt`
+        // (forward+backward) is in a transient (settling) state near the signal's real start/end —
+        // to keep that away from the symbols we measure, we add extra symbols at both ends of
+        // the buffer (measuring on a short/unpadded buffer would give a pure edge-effect test
+        // artefact, not a genuine demodulator error).
         let bits: Vec<u8> = vec![0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1];
         let audio = modulate_msk(&bits, sr);
         let freq = instantaneous_freq(&audio, sr, 1500.0, 500.0);
         let tb = sr / 1200.0;
 
-        // 7. sembolün (0, indeks 6) ortası: 1200Hz civarında olmalı.
+        // Middle of the 7th symbol (0, index 6): should be around 1200Hz.
         let idx0 = (6.5 * tb) as usize;
-        assert!((freq[idx0] - 1200.0).abs() < 20.0, "freq={} (1200 bekleniyor)", freq[idx0]);
+        assert!((freq[idx0] - 1200.0).abs() < 20.0, "freq={} (expected 1200)", freq[idx0]);
 
-        // 11. sembolün (1, indeks 10) ortası: 1800Hz civarında olmalı.
+        // Middle of the 11th symbol (1, index 10): should be around 1800Hz.
         let idx1 = (10.5 * tb) as usize;
-        assert!((freq[idx1] - 1800.0).abs() < 20.0, "freq={} (1800 bekleniyor)", freq[idx1]);
+        assert!((freq[idx1] - 1800.0).abs() < 20.0, "freq={} (expected 1800)", freq[idx1]);
     }
 }

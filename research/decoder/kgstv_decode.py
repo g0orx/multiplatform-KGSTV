@@ -1,8 +1,8 @@
 """
-KG-STV prototip demodülatör/decoder — ters mühendislik doğrulaması için.
-Sadece analiz amaçlı; performans için optimize edilmemiştir.
+KG-STV prototype demodulator/decoder — for reverse-engineering verification.
+For analysis purposes only; not optimized for performance.
 
-Doğrulanmış protokol parametreleri: bkz. docs/protocol_spec.md
+Verified protocol parameters: see docs/protocol_spec.md
 """
 import numpy as np
 from scipy.io import wavfile

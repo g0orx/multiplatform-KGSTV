@@ -2,7 +2,7 @@
 name = "kgstv-modem"
 version = "0.1.0"
 edition = "2021"
-description = "KG-STV için ses I/O + MSK modülatör/demodülatör (kgstv-core üzerine inşa edilmiştir)."
+description = "Audio I/O + MSK modulator/demodulator for KG-STV (built on top of kgstv-core)."
 license = "MIT OR Apache-2.0"
 
 [dependencies]

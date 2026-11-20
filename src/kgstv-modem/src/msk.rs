@@ -1,20 +1,20 @@
-//! MSK modülatör (TX) ve demodülatör (RX, bit-seviyesi).
+//! MSK modulator (TX) and demodulator (RX, bit level).
 //!
-//! Modülasyon formülü `kgstv.exe` disassembly'sinden kesin olarak doğrulandı (bkz.
-//! docs/protocol_spec.md, "Modülatör formülü"): gerçek sürekli-faz (continuous-phase) sentez,
-//! `frekans = seviye×300+1500 Hz`, `faz += 2π·f/örnekleme_hızı` her örnekte.
+//! The modulation formula was conclusively verified from the `kgstv.exe` disassembly (see
+//! docs/protocol_spec.md, "Modulator formula"): true continuous-phase synthesis,
+//! `frequency = level×300+1500 Hz`, `phase += 2π·f/sample_rate` on every sample.
 //!
-//! Demodülasyon, sembol başına Hanning-pencereli DFT ton-korelasyonu kullanır (Goertzel'e
-//! eşdeğer) — MSK'nin 600Hz ton aralığı 1200 baud'da tam ortogonal olduğu için bu basit
-//! yöntem gerçek off-air kayıtlarda mükemmel/üretim-kalitesinde sonuç veriyor (bkz.
-//! docs/protocol_spec.md, birçok gerçek istasyonla doğrulandı).
+//! Demodulation uses a per-symbol Hanning-windowed DFT tone correlation (equivalent to
+//! Goertzel) — since MSK's 600Hz tone spacing is exactly orthogonal at 1200 baud, this simple
+//! method gives perfect/production-quality results on real off-air recordings (see
+//! docs/protocol_spec.md, verified with many real stations).
 
 use std::f64::consts::PI;
 
 pub const BAUD: f64 = 1200.0;
 pub const MSK_FREQS: [f64; 2] = [1200.0, 1800.0];
 
-/// Ham bitleri (0/1) MSK ses örneklerine (-1.0..1.0, mono) çevirir. `sample_rate`: Hz.
+/// Converts raw bits (0/1) into MSK audio samples (-1.0..1.0, mono). `sample_rate`: Hz.
 pub fn modulate_msk(bits: &[u8], sample_rate: f64) -> Vec<f64> {
     let tb = sample_rate / BAUD;
     let n_samples = ((bits.len() as f64) * tb).round().max(0.0) as usize;
@@ -30,8 +30,8 @@ pub fn modulate_msk(bits: &[u8], sample_rate: f64) -> Vec<f64> {
     out
 }
 
-/// Filtrelenmiş ses örnekleri üzerinde sembol-seviyesi bit kararları veren yardımcı.
-/// `anchor`: sembol 0'ın başladığı örnek konumu (kesirli olabilir — ince zamanlama).
+/// Helper that makes symbol-level bit decisions on filtered audio samples.
+/// `anchor`: the sample position where symbol 0 starts (may be fractional — fine timing).
 pub struct ToneClock<'a> {
     data: &'a [f64],
     sample_rate: f64,
@@ -57,7 +57,7 @@ impl<'a> ToneClock<'a> {
         &self.data[a..b]
     }
 
-    /// Belirli bir frekanstaki ton gücü (Hanning-pencereli DFT korelasyonu büyüklüğü).
+    /// Tone power at a given frequency (magnitude of a Hanning-windowed DFT correlation).
     pub fn tone_power(&self, t0: f64, i: i64, freq: f64) -> f64 {
         let seg = self.window(t0, i);
         let n = seg.len();
@@ -79,7 +79,7 @@ impl<'a> ToneClock<'a> {
         (re * re + im * im).sqrt()
     }
 
-    /// Tek bir MSK bitini (0/1) sembol indeksi `i`'de karar verir.
+    /// Decides a single MSK bit (0/1) at symbol index `i`.
     pub fn msk_bit(&self, t0: f64, i: i64) -> u8 {
         let p0 = self.tone_power(t0, i, MSK_FREQS[0]);
         let p1 = self.tone_power(t0, i, MSK_FREQS[1]);
@@ -90,23 +90,23 @@ impl<'a> ToneClock<'a> {
         }
     }
 
-    /// `t0`'dan başlayarak `n` ardışık MSK bitini kararlaştırır.
+    /// Decides `n` consecutive MSK bits starting from `t0`.
     pub fn msk_bits(&self, t0: f64, n: i64) -> Vec<u8> {
         (0..n).map(|i| self.msk_bit(t0, i)).collect()
     }
 
-    /// Herhangi bir kesirli örnek konumunda (sembol ızgarasına bağlı olmadan) yumuşak
-    /// (soft) MSK karar metriği: `(p1-p0)/(p1+p0)`, yaklaşık [-1,1] aralığında — -1 saf
-    /// 1200Hz (bit 0), +1 saf 1800Hz (bit 1). `center`'ı ortalayan `2×half_window` genişliğinde
-    /// Hanning-pencereli bir pencere kullanır. `msk_bit`'in aksine sembol sınırlarına
-    /// kilitlenmez; göz diyagramı (eye diagram) gibi zamanlama/gürültü görselleştirmeleri
-    /// için tasarlandı.
+    /// Soft MSK decision metric at any fractional sample position (not tied to the symbol
+    /// grid): `(p1-p0)/(p1+p0)`, roughly in the [-1,1] range — -1 is pure
+    /// 1200Hz (bit 0), +1 is pure 1800Hz (bit 1). Uses a Hanning-windowed window of width
+    /// `2×half_window` centred on `center`. Unlike `msk_bit` it does not lock to symbol
+    /// boundaries; designed for timing/noise visualizations such as the eye
+    /// diagram.
     ///
-    /// `half_window`: pencere yarı-genişliği (örnek). Sert bit kararına en yakın (maksimum
-    /// SNR/eşleşmiş filtre) davranış için `tb/2` kullan — ama bu, sembolün neredeyse tamamında
-    /// pencereyi komşu sembole taşırıp metriği sıfıra yakın bastırır, göz diyagramını "düz"
-    /// gösterir. Klasik bir göz diyagramının beklenen "ortada açık, kenarlarda kapalı" görünümü
-    /// için `tb/6`–`tb/4` gibi daha DAR bir pencere kullanılmalı (bkz. `kgstv-gui`).
+    /// `half_window`: window half-width (samples). For behaviour closest to the hard bit decision
+    /// (maximum SNR/matched filter) use `tb/2` — but over almost the whole symbol this spills the
+    /// window into the neighbouring symbol and squashes the metric towards zero, making the eye
+    /// diagram look "flat". For the expected "open in the middle, closed at the edges" look of a
+    /// classic eye diagram, a NARROWER window such as `tb/6`–`tb/4` should be used (see `kgstv-gui`).
     pub fn soft_metric_at(&self, center: f64, half_window: f64) -> f64 {
         let half = half_window;
         let a = (center - half).round().max(0.0) as usize;
@@ -165,14 +165,14 @@ mod tests {
         for (i, &bit) in bits.iter().enumerate() {
             let center = (i as f64 + 0.5) * clk.tb();
             let m = clk.soft_metric_at(center, clk.tb() / 2.0);
-            // Komşu sembollerin farklı frekanslarından sızan enerji (CPFSK'nin sürekli-faz
-            // doğası + tam sembole hizalanmamış merkezleme) genliği zayıflatabilir; işaret
-            // (yön) yine de doğru olmalı — bu, sert `msk_bit` kararının aksine sürekli bir
-            // görselleştirme metriği (bkz. göz diyagramı).
+            // Energy leaking from the different frequencies of neighbouring symbols (the continuous-phase
+            // nature of CPFSK + centring not exactly aligned to the symbol) can weaken the amplitude; the sign
+            // (direction) must still be right — unlike the hard `msk_bit` decision, this is a continuous
+            // visualization metric (see eye diagram).
             if bit == 1 {
-                assert!(m > 0.02, "bit=1 için metrik pozitif olmalı, m={m}");
+                assert!(m > 0.02, "metric must be positive for bit=1, m={m}");
             } else {
-                assert!(m < -0.02, "bit=0 için metrik negatif olmalı, m={m}");
+                assert!(m < -0.02, "metric must be negative for bit=0, m={m}");
             }
         }
     }

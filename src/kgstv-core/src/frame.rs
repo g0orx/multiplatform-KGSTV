@@ -1,6 +1,6 @@
-//! Üst seviye frame encode/decode: preamble+sync (sadece transmisyon başında) ve
-//! ardışık frame'ler için sync+header(+data). Gerçek off-air kayıt üzerinde frame-walking
-//! ile doğrulandı (bkz. docs/protocol_spec.md, "Tam Transmisyon Yürüyüşü").
+//! Top-level frame encode/decode: preamble+sync (only at the start of a transmission) and
+//! sync+header(+data) for consecutive frames. Verified by frame-walking a real off-air recording
+//! (see docs/protocol_spec.md, "Full Transmission Walk").
 
 use crate::conv::{encode as conv_encode, viterbi_decode};
 use crate::constants::{sync_word_bits, HEADER_ENC_BITS};
@@ -8,25 +8,25 @@ use crate::crc::crc16_aug_ccitt;
 use crate::header::InfoChunk;
 use crate::whiten::whiten;
 
-/// Bir header'ı (54 ham bit) tam kodlanmış+whitened 108-bit dizisine çevirir (TX tarafı).
+/// Converts a header (54 raw bits) into a fully encoded+whitened 108-bit sequence (TX side).
 pub fn encode_header(hdr: &InfoChunk) -> Vec<u8> {
     let raw = hdr.to_bits();
     let encoded = conv_encode(&raw);
     whiten(&encoded)
 }
 
-/// 108-bit kodlanmış+whitened diziden header'ı çözer (RX tarafı).
-/// Dönüş: (header, viterbi_metric, crc_ok).
+/// Decodes the header from a 108-bit encoded+whitened sequence (RX side).
+/// Returns: (header, viterbi_metric, crc_ok).
 pub fn decode_header(rx108: &[u8]) -> (InfoChunk, u32, bool) {
     assert_eq!(rx108.len(), HEADER_ENC_BITS);
-    let dew = whiten(rx108); // whiten kendi tersidir
+    let dew = whiten(rx108); // whiten is its own inverse
     let (raw, metric, _end_state) = viterbi_decode(&dew, 54, 0);
     let hdr = InfoChunk::parse(&raw);
     let crc_ok = hdr.crc_ok(&raw);
     (hdr, metric, crc_ok)
 }
 
-/// Ham veriyi (NORM: kodsuz) whitened data-chunk bitstream'e çevirir: data + 16-bit CRC.
+/// Converts raw data (NORM: uncoded) into a whitened data-chunk bitstream: data + 16-bit CRC.
 pub fn encode_data_norm(data_bits: &[u8]) -> Vec<u8> {
     let crc = crc16_aug_ccitt(data_bits);
     let mut combined = data_bits.to_vec();
@@ -34,8 +34,8 @@ pub fn encode_data_norm(data_bits: &[u8]) -> Vec<u8> {
     whiten(&combined)
 }
 
-/// NORM (kodsuz) whitened data-chunk'ı çözer. `size_bits`: beklenen ham veri uzunluğu.
-/// Dönüş: (ham veri bitleri, crc_ok).
+/// Decodes a NORM (uncoded) whitened data chunk. `size_bits`: expected raw data length.
+/// Returns: (raw data bits, crc_ok).
 pub fn decode_data_norm(rx: &[u8], size_bits: usize) -> (Vec<u8>, bool) {
     let dew = whiten(rx);
     let data = dew[..size_bits].to_vec();
@@ -45,8 +45,8 @@ pub fn decode_data_norm(rx: &[u8], size_bits: usize) -> (Vec<u8>, bool) {
     (data, ok)
 }
 
-/// Ham veriyi (CONV: K=7 konvolüsyonel kodlu) whitened data-chunk bitstream'ine çevirir:
-/// data + 16-bit CRC, ardından konvolüsyonel kod + whitening (decode_data_conv'un tersi).
+/// Converts raw data (CONV: K=7 convolutionally coded) into a whitened data-chunk bitstream:
+/// data + 16-bit CRC, followed by the convolutional code + whitening (inverse of decode_data_conv).
 pub fn encode_data_conv(data_bits: &[u8]) -> Vec<u8> {
     let crc = crc16_aug_ccitt(data_bits);
     let mut combined = data_bits.to_vec();
@@ -55,7 +55,7 @@ pub fn encode_data_conv(data_bits: &[u8]) -> Vec<u8> {
     whiten(&encoded)
 }
 
-/// CONV (konvolüsyonel kodlu) whitened data-chunk'ı çözer.
+/// Decodes a CONV (convolutionally coded) whitened data chunk.
 pub fn decode_data_conv(rx: &[u8], size_bits: usize) -> (Vec<u8>, bool) {
     let dew = whiten(rx);
     let (bits, _metric, _end_state) = viterbi_decode(&dew, size_bits + 16, 0);
@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn text_frame_roundtrip_matches_real_capture() {
-        // KG-STV_MSK_text.mp3'ten gerçek çözülen header + "TEST3>..." metni.
+        // Real decoded header + "TEST3>..." text from KG-STV_MSK_text.mp3.
         let hdr = InfoChunk { sys: 0, com: 0, c: 0, m: 0, x: 0, y: 0, sc: 10, size: 480, crc: 0 };
         let enc = encode_header(&hdr);
         assert_eq!(enc.len(), 108);

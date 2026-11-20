@@ -1,13 +1,13 @@
-//! Preamble/senkron kelimesi arama: bir kayıtta KG-STV çerçevesinin tam olarak nerede
-//! başladığını (örnek-hassasiyetinde "anchor") bulur.
+//! Preamble/sync-word search: finds exactly where a KG-STV frame starts in a recording
+//! (a sample-precise "anchor").
 
 use crate::msk::ToneClock;
 use kgstv_core::constants::{sync_word_bits, PREAMBLE_LEN};
 
 pub const SYNC_LEN: usize = 63;
 
-/// `t0` anchor'ında, preamble'ın hemen ardından beklenen 63-bit senkron kelimesiyle olan
-/// bit-hata sayısı (0 = tam eşleşme).
+/// Number of bit errors against the 63-bit sync word expected right after the preamble at
+/// anchor `t0` (0 = exact match).
 pub fn sync_err(clk: &ToneClock, t0: f64) -> u32 {
     let sw = sync_word_bits();
     let mut err = 0u32;
@@ -20,9 +20,9 @@ pub fn sync_err(clk: &ToneClock, t0: f64) -> u32 {
     err
 }
 
-/// Kaba (tam örnek adımlarıyla) + ince (kesirli) iki aşamalı arama. Temiz/kısa kayıtlar için
-/// yeterli — uzun/gürültülü gerçek kayıtlarda tüm dosyayı tarayan vektörize bir arama gerekir
-/// (Python prototipindeki `decode_session.SyncLocator` böyle bir yaklaşım kullanıyor).
+/// Two-stage coarse (whole-sample steps) + fine (fractional) search. Sufficient for clean/short
+/// recordings — long/noisy real recordings need a vectorized search that scans the whole file
+/// (`decode_session.SyncLocator` in the Python prototype uses such an approach).
 pub fn find_sync(
     clk: &ToneClock,
     coarse_range: impl Iterator<Item = i64>,
@@ -39,12 +39,12 @@ pub fn find_sync(
             break;
         }
     }
-    let (_, base) = best.expect("coarse_range boş olamaz");
+    let (_, base) = best.expect("coarse_range cannot be empty");
 
-    // Eşitlik (tie) durumunda kaba arama tarafından bulunan `base`'e en yakın konumu tercih et:
-    // pencere fonksiyonu negatif örnek konumlarını 0'a "clamp" ettiği için (bkz. `window`),
-    // sadece en küçük hatayı almak, alakasız derecede uzak/negatif t0 değerleriyle sahte
-    // eşitliklere yol açabilir.
+    // On a tie, prefer the position closest to the `base` found by the coarse search:
+    // since the window function "clamps" negative sample positions to 0 (see `window`),
+    // simply taking the smallest error can lead to spurious ties with irrelevantly
+    // distant/negative t0 values.
     let mut best2: Option<(u32, f64)> = None;
     let steps = ((2.0 * fine_span) / fine_step).round() as i64;
     for s in 0..=steps {
@@ -75,8 +75,8 @@ mod tests {
         let sr = 44100.0;
         let mut bits = frame::preamble_bits();
         bits.extend(frame::sync_bits());
-        // biraz da header benzeri rastgele bit ekleyelim (aramanın gerçek anchor'ı bulduğunu
-        // teyit etmek için preamble+sync sonrası veri de olsun)
+        // add some header-like random bits too (so there is data after preamble+sync,
+        // to confirm the search finds the real anchor)
         bits.extend(vec![0u8; 108]);
         let audio = modulate_msk(&bits, sr);
         let clk = ToneClock::new(&audio, sr);

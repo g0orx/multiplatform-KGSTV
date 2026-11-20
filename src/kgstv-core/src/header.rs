@@ -1,5 +1,5 @@
-//! Bilgi chunk'ı (header): 54 ham bit, alan yerleşimi readme.txt'den birebir çevrildi ve
-//! gerçek off-air kayıt üzerinde doğrulandı (bkz. docs/protocol_spec.md).
+//! Info chunk (header): 54 raw bits, field layout translated verbatim from readme.txt and
+//! verified against a real off-air recording (see docs/protocol_spec.md).
 //!
 //! ┌──────┬──────┬───┬───┬──────┬──────┬──────┬──────┬──────┐
 //! │ sys  │ com  │ c │ m │  x   │  y   │  sc  │ size │ CRC  │
@@ -35,7 +35,7 @@ fn u32_to_bits(mut v: u32, width: usize) -> Vec<u8> {
 }
 
 impl InfoChunk {
-    /// 54-bit ham diziden header alanlarını ayrıştırır (CRC doğrulaması yapılmaz, ayrıca çağrılmalı).
+    /// Parses the header fields from a 54-bit raw sequence (CRC is not verified; call that separately).
     pub fn parse(bits54: &[u8]) -> Self {
         assert_eq!(bits54.len(), 54);
         InfoChunk {
@@ -51,12 +51,12 @@ impl InfoChunk {
         }
     }
 
-    /// sys..size alanları (ilk 38 bit) üzerinden CRC'yi hesaplayıp `crc` alanıyla karşılaştırır.
+    /// Computes the CRC over the sys..size fields (first 38 bits) and compares it with the `crc` field.
     pub fn crc_ok(&self, bits54: &[u8]) -> bool {
         crc16_aug_ccitt(&bits54[..38]) == self.crc
     }
 
-    /// Header alanlarını 54-bit ham diziye paketler (CRC otomatik hesaplanır).
+    /// Packs the header fields into a 54-bit raw sequence (CRC is computed automatically).
     pub fn to_bits(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(54);
         out.extend(u32_to_bits(self.sys as u32, 4));
@@ -77,7 +77,7 @@ impl InfoChunk {
 mod tests {
     use super::*;
 
-    /// KG-STV_MSK_text.mp3'ten gerçek off-air kayıttan decode edilen header.
+    /// Header decoded from the real off-air recording KG-STV_MSK_text.mp3.
     const REAL_HEADER_BITS: &str = "000000000000000000000010100001111000000110011100000010";
 
     fn bits(s: &str) -> Vec<u8> {
@@ -94,7 +94,7 @@ mod tests {
         assert_eq!(hdr.m, 0);
         assert_eq!(hdr.x, 0);
         assert_eq!(hdr.y, 0);
-        assert_eq!(hdr.sc, 10); // kgstv.ini ImageQ=10 ile çapraz doğrulandı
+        assert_eq!(hdr.sc, 10); // cross-checked against kgstv.ini ImageQ=10
         assert_eq!(hdr.size, 480);
         assert!(hdr.crc_ok(&b));
     }

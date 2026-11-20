@@ -1,8 +1,8 @@
-//! Standart JPEG (ITU-T T.81 Annex K) Huffman tabloları ve kuantizasyon tabloları.
-//! `kgstv.exe` disassembly'sinde bu tabloların (Huffman: birebir, kuantizasyon: temel
-//! kalite=50 tablosu) doğrudan gömülü olduğu doğrulandı — bkz. docs/protocol_spec.md.
+//! Standard JPEG (ITU-T T.81 Annex K) Huffman tables and quantization tables.
+//! Verified in the `kgstv.exe` disassembly that these tables (Huffman: verbatim, quantization: the base
+//! quality=50 table) are embedded directly — see docs/protocol_spec.md.
 
-/// Zigzag taraması: scan-sırası indeksi -> doğal (satır-major) 8x8 pozisyonu.
+/// Zigzag scan: scan-order index -> natural (row-major) 8x8 position.
 pub const ZIGZAG: [usize; 64] = [
     0, 1, 8, 16, 9, 2, 3, 10,
     17, 24, 32, 25, 18, 11, 4, 5,
@@ -14,7 +14,7 @@ pub const ZIGZAG: [usize; 64] = [
     53, 60, 61, 54, 47, 55, 62, 63,
 ];
 
-/// Standart IJG kalite=50 luma kuantizasyon tablosu (doğal sıra), `kgstv.exe`'de birebir bulundu.
+/// Standard IJG quality=50 luma quantization table (natural order), found verbatim in `kgstv.exe`.
 pub const STD_LUMA_QT: [u16; 64] = [
     16, 11, 10, 16, 24, 40, 51, 61,
     12, 12, 14, 19, 26, 58, 60, 55,
@@ -26,7 +26,7 @@ pub const STD_LUMA_QT: [u16; 64] = [
     72, 92, 95, 98, 112, 100, 103, 99,
 ];
 
-/// Standart IJG kalite=50 chroma kuantizasyon tablosu (doğal sıra).
+/// Standard IJG quality=50 chroma quantization table (natural order).
 pub const STD_CHROMA_QT: [u16; 64] = [
     17, 18, 24, 47, 99, 99, 99, 99,
     18, 21, 26, 66, 99, 99, 99, 99,
@@ -38,15 +38,15 @@ pub const STD_CHROMA_QT: [u16; 64] = [
     99, 99, 99, 99, 99, 99, 99, 99,
 ];
 
-/// (uzunluk-başına-kod-sayısı[1..16], değerler) — standart JPEG DC luminance tablosu (K.3).
+/// (codes-per-length[1..16], values) — standard JPEG DC luminance table (K.3).
 pub const DC_LUMA_COUNTS: [u8; 16] = [0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0];
 pub const DC_LUMA_VALUES: [u8; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 
-/// Standart JPEG DC chrominance tablosu (K.4).
+/// Standard JPEG DC chrominance table (K.4).
 pub const DC_CHROMA_COUNTS: [u8; 16] = [0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0];
 pub const DC_CHROMA_VALUES: [u8; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 
-/// Standart JPEG AC luminance tablosu (K.5).
+/// Standard JPEG AC luminance table (K.5).
 pub const AC_LUMA_COUNTS: [u8; 16] = [0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 0x7d];
 pub const AC_LUMA_VALUES: [u8; 162] = [
     0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12,
@@ -72,7 +72,7 @@ pub const AC_LUMA_VALUES: [u8; 162] = [
     0xf9, 0xfa,
 ];
 
-/// Standart JPEG AC chrominance tablosu (K.6).
+/// Standard JPEG AC chrominance table (K.6).
 pub const AC_CHROMA_COUNTS: [u8; 16] = [0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 0x77];
 pub const AC_CHROMA_VALUES: [u8; 162] = [
     0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21,

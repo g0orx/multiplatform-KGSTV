@@ -1,11 +1,11 @@
 //! CRC-16/AUG-CCITT (poly=0x1021, init=0x1D0F, refin=false, refout=false, xorout=0x0000).
-//! Gerçek KG-STV off-air kaydı üzerinde header VE data chunk CRC'leri için bit-mükemmel
-//! doğrulandı (bkz. docs/protocol_spec.md).
+//! Verified bit-perfect on a real KG-STV off-air recording for both header AND data chunk CRCs
+//! (see docs/protocol_spec.md).
 
 const POLY: u16 = 0x1021;
 const INIT: u16 = 0x1D0F;
 
-/// Bit-serial CRC hesabı. `bits`: MSB-first sıradaki 0/1 dizisi.
+/// Bit-serial CRC computation. `bits`: 0/1 sequence in MSB-first order.
 pub fn crc16_aug_ccitt(bits: &[u8]) -> u16 {
     let mut reg: u16 = INIT;
     for &bit in bits {
@@ -19,7 +19,7 @@ pub fn crc16_aug_ccitt(bits: &[u8]) -> u16 {
     reg
 }
 
-/// Bayt dizisi üzerinden CRC (MSB-first, byte-hizalı veri için kolaylık fonksiyonu).
+/// CRC over a byte array (MSB-first, convenience function for byte-aligned data).
 pub fn crc16_aug_ccitt_bytes(data: &[u8]) -> u16 {
     let mut bits = Vec::with_capacity(data.len() * 8);
     for &byte in data {
@@ -40,7 +40,7 @@ mod tests {
 
     #[test]
     fn header_crc_matches_real_capture() {
-        // KG-STV_MSK_text.mp3'ten decode edilen gerçek 38-bit header alanı (sys..size) ve CRC'si.
+        // Real 38-bit header field (sys..size) and its CRC decoded from KG-STV_MSK_text.mp3.
         let hdr38 = bits_from_str("00000000000000000000001010000111100000");
         assert_eq!(hdr38.len(), 38);
         assert_eq!(crc16_aug_ccitt(&hdr38), 0x6702);

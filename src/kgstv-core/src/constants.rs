@@ -1,41 +1,41 @@
-//! KG-STV protokolünün sabitleri.
-//! Kaynak: docs/protocol_spec.md (JJ0OBZ'nin orijinal readme.txt'sinden çevrildi,
-//! gerçek off-air kayıtlar üzerinde bit-seviyesinde doğrulandı).
+//! Constants of the KG-STV protocol.
+//! Source: docs/protocol_spec.md (translated from JJ0OBZ's original readme.txt,
+//! verified at bit level against real off-air recordings).
 
-/// Sembol hızı (baud). MSK ve 4L-FSK için aynı.
+/// Symbol rate (baud). Same for MSK and 4L-FSK.
 pub const BAUD: f64 = 1200.0;
 
-/// MSK frekansları: [bit0 (space), bit1 (mark)]
+/// MSK frequencies: [bit0 (space), bit1 (mark)]
 pub const MSK_FREQS: [f64; 2] = [1200.0, 1800.0];
 
-/// 4L-FSK frekansları: seviye 0..3 -> Hz. Seviye = 2*bit_yüksek + bit_alçak.
+/// 4L-FSK frequencies: level 0..3 -> Hz. Level = 2*bit_high + bit_low.
 /// '00'=1200Hz '01'=1400Hz '10'=1600Hz '11'=1800Hz
 pub const FSK4_FREQS: [f64; 4] = [1200.0, 1400.0, 1600.0, 1800.0];
 
-/// Preamble: 256 bit, "01" tekrarı (senkronizasyon öncesi, clock recovery için).
+/// Preamble: 256 bits, repeating "01" (before sync, for clock recovery).
 pub const PREAMBLE_LEN: usize = 256;
 
-/// 63-bit senkron kelimesi (M-sequence), readme.txt'den birebir.
+/// 63-bit sync word (M-sequence), verbatim from readme.txt.
 pub const SYNC_WORD: &str = "000011100001001000110110010110101110111100110001010100111111010";
 
-/// 127-bit whitening (beyazlatma) M-sequence kodu. Her chunk'ın (header, data) başında
-/// index sıfırdan yeniden başlar (global/sürekli sayaç DEĞİL) — gerçek kayıt üzerinde doğrulandı.
+/// 127-bit whitening M-sequence code. At the start of each chunk (header, data) the
+/// index restarts from zero (NOT a global/continuous counter) — verified against a real recording.
 pub const WHITENING: &str = concat!(
     "1110110011000100100111001111100100000100011010101001101101001010",
     "000101100001100101111111010110111011110001110100010101110000001"
 );
 
-/// Bilgi chunk'ı (header) ham uzunluğu, bit.
+/// Raw length of the info chunk (header), in bits.
 pub const HEADER_RAW_BITS: usize = 54;
 
-/// Header her zaman rate-1/2 K=7 konvolüsyonel kodla kodlanır (veri chunk'ının kendi
-/// c/m ayarından bağımsız) -> 108 kodlanmış bit.
+/// The header is always encoded with the rate-1/2 K=7 convolutional code (independent of the
+/// data chunk's own c/m setting) -> 108 encoded bits.
 pub const HEADER_ENC_BITS: usize = HEADER_RAW_BITS * 2;
 
-/// CRC alan genişliği (header ve data chunk'ının kendi CRC'si için).
+/// CRC field width (for the header's and the data chunk's own CRC).
 pub const CRC_BITS: usize = 16;
 
-/// Komut kodları (sistem kodu versiyon '0').
+/// Command codes (system code version '0').
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     Text = 0,
@@ -61,20 +61,20 @@ impl Command {
         }
     }
 
-    /// Bitiş/iptal/BSR sinyalleri veri chunk'ı içermez (spec, readme.txt).
+    /// End/abort/BSR signals contain no data chunk (spec, readme.txt).
     pub fn has_data_chunk(&self) -> bool {
         !matches!(self, Command::End | Command::BsrRequest | Command::Abort)
     }
 }
 
-/// Modülasyon modu (header'ın `m` alanı).
+/// Modulation mode (the header's `m` field).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Modulation {
     Msk = 0,
     Fsk4 = 1,
 }
 
-/// Kanal kodlama modu (header'ın `c` alanı) — veri chunk'ı için.
+/// Channel coding mode (the header's `c` field) — for the data chunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodingMode {
     Norm = 0,

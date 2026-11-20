@@ -1,36 +1,36 @@
-# KG-STV Protokol Spesifikasyonu (Orijinal readme.txt'den)
+# KG-STV Protocol Specification (from the original readme.txt)
 
-> **Kaynak:** `kgstv.zip` içindeki `readme.txt` (KG-STV ver.1.0.1), JJ0OBZ (K.G., Niigata-Myoko,
-> Japonya) tarafından yazılmış. Dosya Shift-JIS/CP932 kodlamasında; `research/notes/readme_utf8_cp932.txt`
-> içinde UTF-8'e çevrilmiş hali mevcut. Bu belge, o bölümün **birebir çevirisidir** — yorum/tahmin
-> içermez, sadece orijinal Japonca metnin çevirisidir. Yazarın kendi ifadesiyle bu bir "deneysel"
-> protokol; yazar da zamanla hataların/eksikliklerin bulunabileceğini not ediyor.
+> **Source:** `readme.txt` inside `kgstv.zip` (KG-STV ver.1.0.1), written by JJ0OBZ (K.G., Niigata-Myoko,
+> Japan). The file is in Shift-JIS/CP932 encoding; a version converted to UTF-8 is available in
+> `research/notes/readme_utf8_cp932.txt`. This document is a **verbatim translation** of that section — it
+> contains no commentary/guesswork, only a translation of the original Japanese text. In the author's own
+> words this is an "experimental" protocol; the author also notes that errors/omissions may be found over time.
 
-Bu, elimizdeki **tek otoriter kaynak**. Web'deki üçüncü parti özetlerin (sigidwiki, wells10000 vb.)
-verdiği sayılarla (1200 baud, MSK/4LFSK frekansları, Viterbi K=7) uyuşuyor, ama burada **bit
-seviyesinde çerçeve yapısı** ekstra bilgi olarak var.
+This is the **only authoritative source** we have. It agrees with the numbers given by third-party
+summaries on the web (sigidwiki, wells10000 etc.) (1200 baud, MSK/4LFSK frequencies, Viterbi K=7), but
+here the **bit-level frame structure** is available as extra information.
 
-## Genel Aktarım Parametreleri
+## General Transmission Parameters
 
-| Parametre | Değer |
+| Parameter | Value |
 |---|---|
-| Modülasyon | MSK, veya MSK + 4-seviyeli FSK karma modülasyon |
+| Modulation | MSK, or mixed MSK + 4-level FSK modulation |
 | Baud rate | 1200 baud |
-| MSK frekansları | Space (0) = 1200 Hz, Mark (1) = 1800 Hz |
-| 4L-FSK frekansları | `00`→1200 Hz, `01`→1400 Hz, `10`→1600 Hz, `11`→1800 Hz |
-| Bant genişliği | 500–2500 Hz |
-| Hata düzeltme | Yok, veya Viterbi kodu (NASA standart K=7 kod) |
-| Beyazlatma (whitening/scrambling) | Var — periyodu 127 bit olan bir M-sequence kodu her bite XOR'lanır |
-| Interleaver | Yok |
-| Header (senkron öncesi) | `01` tekrarlı sinyal, 256 bit |
-| Temel kod yapısı | senkron kodu + 54-bit bilgi chunk'ı (header) + değişken uzunlukta veri chunk'ı |
-| Hata tespiti | Var (CRC-16/CCITT) |
-| Senkron bit dizisi | 63 bit'lik M-sequence kodu |
-| Görüntü sıkıştırma | JPEG uyumlu (16×16 piksel blok, 4:1:1 chroma subsampling) |
-| Metin kodlaması | Shift-JIS uyumlu |
-| Emisyon tipi | F1D (SSB modunda çalışma), F2D (FM modunda çalışma) |
+| MSK frequencies | Space (0) = 1200 Hz, Mark (1) = 1800 Hz |
+| 4L-FSK frequencies | `00`→1200 Hz, `01`→1400 Hz, `10`→1600 Hz, `11`→1800 Hz |
+| Bandwidth | 500–2500 Hz |
+| Error correction | None, or Viterbi code (NASA standard K=7 code) |
+| Whitening/scrambling | Yes — an M-sequence code with a period of 127 bits is XORed onto every bit |
+| Interleaver | None |
+| Header (before sync) | Repeating `01` signal, 256 bits |
+| Basic code structure | sync code + 54-bit info chunk (header) + variable-length data chunk |
+| Error detection | Yes (CRC-16/CCITT) |
+| Sync bit sequence | 63-bit M-sequence code |
+| Image compression | JPEG-compatible (16×16 pixel blocks, 4:1:1 chroma subsampling) |
+| Text encoding | Shift-JIS compatible |
+| Emission type | F1D (operation in SSB mode), F2D (operation in FM mode) |
 
-## Bilgi Chunk'ı (Header) Yapısı — sistem kodu versiyon '0'
+## Info Chunk (Header) Structure — system code version '0'
 
 ```
 ┌──────┬──────┬───┬───┬──────┬──────┬──────┬──────┬──────┐
@@ -39,30 +39,30 @@ seviyesinde çerçeve yapısı** ekstra bilgi olarak var.
  0      4      8   9   10     16     22     26     38   54 bit
 ```
 
-| Alan | Bit offset | Genişlik | Anlamı |
+| Field | Bit offset | Width | Meaning |
 |---|---|---|---|
-| `sys` | 0 | 4 bit | Sistem kodu (versiyon) |
-| `com` | 4 | 4 bit | Komut kodu (bkz. komut tablosu) |
-| `c` | 8 | 1 bit | Kodlama modu (NORM/CONV, yani konvolüsyonel kod açık/kapalı) |
-| `m` | 9 | 1 bit | Modülasyon modu (MSK / 4L-FSK) |
-| `x` | 10 | 6 bit | Görüntü bloğu konumu (X) |
-| `y` | 16 | 6 bit | Görüntü bloğu konumu (Y) |
-| `sc` | 22 | 4 bit | JPEG ölçek/kalite boyutu |
-| `size` | 26 | 12 bit | Veri (data chunk) boyutu |
-| `CRC` | 38 | 16 bit | Hata tespit kodu (CRC-16 CCITT) |
+| `sys` | 0 | 4 bits | System code (version) |
+| `com` | 4 | 4 bits | Command code (see command table) |
+| `c` | 8 | 1 bit | Coding mode (NORM/CONV, i.e. convolutional code on/off) |
+| `m` | 9 | 1 bit | Modulation mode (MSK / 4L-FSK) |
+| `x` | 10 | 6 bits | Image block position (X) |
+| `y` | 16 | 6 bits | Image block position (Y) |
+| `sc` | 22 | 4 bits | JPEG scale/quality size |
+| `size` | 26 | 12 bits | Data (data chunk) size |
+| `CRC` | 38 | 16 bits | Error detection code (CRC-16 CCITT) |
 
-Toplam header uzunluğu: **54 bit**.
+Total header length: **54 bits**.
 
-> **Önemli not:** Bilgi chunk'ı (header), veri chunk'ının kendi modülasyon/kodlama ayarından
-> bağımsız olarak **her zaman MSK modülasyonu + konvolüsyonel kodlama** ile gönderilir. Yani
-> kullanıcı 4L-FSK veya NORM (kodsuz) seçse bile, header her zaman en dayanıklı ayarla gider —
-> sadece veri chunk'ı kullanıcının seçtiği modülasyon/kodlamayla gönderilir.
+> **Important note:** The info chunk (header) is **always sent with MSK modulation + convolutional
+> coding**, independent of the data chunk's own modulation/coding setting. So even if the user selects
+> 4L-FSK or NORM (uncoded), the header always goes with the most robust setting — only the data chunk
+> is sent with the modulation/coding the user selected.
 
-`x` ve `y` 6 bit oldukları için 0–63 aralığında blok koordinatı ifade edebilir — 320×240 görüntü,
-16×16'lık bloklara bölündüğünde 20×15 = 300 blok olur (X: 0–19, Y: 0–14), yani 6 bit fazlasıyla
-yetiyor.
+Since `x` and `y` are 6 bits, they can express block coordinates in the range 0–63 — a 320×240 image
+split into 16×16 blocks gives 20×15 = 300 blocks (X: 0–19, Y: 0–14), so 6 bits is more than
+enough.
 
-## Veri Chunk'ı (Data Chunk) Yapısı
+## Data Chunk Structure
 
 ```
 ┌──────────────────────────────────────────┬──────┐
@@ -70,524 +70,520 @@ yetiyor.
 └──────────────────────────────────────────┴──────┘
 ```
 
-Veri chunk'ı, bilgi chunk'ının CRC'sinin hemen ardından gönderilir. Kendi CRC'si de var (yine
-CRC-16 CCITT olduğu varsayılıyor, ayrıca belirtilmemiş ama muhtemelen aynı).
+The data chunk is sent immediately after the info chunk's CRC. It also has its own CRC (assumed to
+be CRC-16 CCITT again; not stated separately, but probably the same).
 
-## Komut Tablosu (sistem kodu versiyon '0')
+## Command Table (system code version '0')
 
-| Komut değeri | İşlev |
+| Command value | Function |
 |---|---|
-| 0 | Metin aktarımı (text) |
-| 1 | Görüntü aktarımı (image) |
-| 2 | BSR yanıtı (BSR response — istenen blokların yeniden gönderimi) |
-| 3 | Bitiş (end/finish) |
-| 4 | BSR isteği (BSR request — kayıp blokların istenmesi) |
-| 5 | İptal / kesinti (abort) |
-| 6 | Çağrı işareti (callsign) |
+| 0 | Text transmission (text) |
+| 1 | Image transmission (image) |
+| 2 | BSR response (BSR response — retransmission of the requested blocks) |
+| 3 | End (end/finish) |
+| 4 | BSR request (BSR request — requesting lost blocks) |
+| 5 | Cancel / interruption (abort) |
+| 6 | Callsign (callsign) |
 
-## Çerçeveleme Kuralları
+## Framing Rules
 
-1. Aktarıma başlarken önce **256 bit'lik `01` tekrar deseni** (header/preamble) gönderilir —
-   alıcının bit/clock senkronizasyonu kurması için.
-2. Bir "veri formatı" (kod yapısı) şu şekilde tanımlanır:
-   **senkron kodu + bilgi chunk'ı (header) + veri chunk'ı**.
-   Ancak **bitiş (end), iptal (abort) ve BSR sinyalleri veri chunk'ı içermez** — sadece
-   senkron + header gönderilir.
-3. Görüntü verisinde, bu format **blok sayısı kadar arka arkaya** gönderilir (her 16×16 blok
-   için bir tam "senkron+header+data" birimi).
-4. Metin aktarımında tek bir format birimi yeterlidir (kendi içinde tamamlanır).
-5. Aktarım **normal tamamlandığında**, sonunda **bitiş sinyali 3 kez** art arda gönderilir.
-6. Aktarım **iptal edildiğinde**, sonunda **iptal sinyali 3 kez** art arda gönderilir.
+1. At the start of a transmission, a **256-bit repeating `01` pattern** (header/preamble) is sent
+   first — so the receiver can establish bit/clock synchronization.
+2. A "data format" (code structure) is defined as follows:
+   **sync code + info chunk (header) + data chunk**.
+   However, **end, abort and BSR signals contain no data chunk** — only
+   sync + header are sent.
+3. For image data, this format is sent **back to back as many times as there are blocks** (one full
+   "sync+header+data" unit for each 16×16 block).
+4. For a text transmission a single format unit is enough (it is self-contained).
+5. When a transmission **completes normally**, the **end signal is sent 3 times** in a row at the end.
+6. When a transmission **is cancelled**, the **abort signal is sent 3 times** in a row at the end.
 
-## Senkron Kodu (63 bit M-sequence)
+## Sync Code (63-bit M-sequence)
 
 ```
 000011100001001000110110010110101110111100110001010100111111010
 ```
 
-## Beyazlatma (Whitening) Kodu — periyot 127 bit M-sequence
+## Whitening Code — period 127-bit M-sequence
 
 ```
 1110110011000100100111001111100100000100011010101001101101001010
 000101100001100101111111010110111011110001110100010101110000001
-```//iki satır art arda birleşince 127 bitlik diziyi oluşturuyor.
+```//the two lines joined together form the 127-bit sequence.
 
-## Diğer Notlar (readme.txt'den)
+## Other Notes (from readme.txt)
 
-- Görüntü boyutu her zaman 320×240'a normalize ediliyor (BMP/JPEG girişi otomatik resize +
-  crop ediliyor).
-- 320×240 bir görüntünün tam aktarımı, sıkıştırma ayarına bağlı olarak **~2 dakika** sürüyor.
-- BSR (Bad Segment Report) mantığı: alıcı, eksik/hatalı blokların koordinatlarını vericiye
-  BSR isteği (komut=4) olarak gönderir; verici bu koordinatlara karşılık gelen blokları BSR
-  yanıtı (komut=2) olarak tekrar gönderir.
-- Metin mesajı: tek seferde en fazla 510 yarım-genişlik (255 tam-genişlik) karakter.
-- Görüntü kalite/skala ayarı kullanıcı tarafından seçilebilir (header'daki `sc` alanı, 4 bit
-  → 0–15 arası bir JPEG ölçek/kalite değeri kodluyor olmalı).
+- The image size is always normalized to 320×240 (BMP/JPEG input is automatically resized +
+  cropped).
+- A full transmission of a 320×240 image takes **~2 minutes**, depending on the compression setting.
+- BSR (Bad Segment Report) logic: the receiver sends the coordinates of missing/corrupted blocks to
+  the transmitter as a BSR request (command=4); the transmitter resends the blocks corresponding to
+  those coordinates as a BSR response (command=2).
+- Text message: at most 510 half-width (255 full-width) characters at a time.
+- The image quality/scale setting can be selected by the user (the `sc` field in the header, 4 bits
+  → should encode a JPEG scale/quality value between 0–15).
 
-## Sonradan Eklenen Özellikler (readme2.txt / readme3.txt — build002→004)
+## Features Added Later (readme2.txt / readme3.txt — build002→004)
 
-Bunlar protokolü **değiştirmiyor**, sadece uygulama (UI/UX) katmanında iyileştirmeler:
-- build002→003: sekmeli (tab) arayüz, "AF Level" ekranı, watchdog/timeout iyileştirmeleri,
-  ImageProcessor harici log entegrasyonu (JA2GRC'nin yazılımı), rastgele/dikey blok tarama sırası
-  seçeneği (fading karşısında blok kaybını dağıtmak için).
-- build003→004: BSR mantığında sağlamlaştırma, çağrı işareti (callsign) güvenilirliği için
-  header'ın N kez tekrar gönderilmesi (ayarlanabilir, varsayılan 5), otomatik eski görüntü
-  silme, log çıkışı iyileştirmeleri.
+These do **not change** the protocol, they are only improvements in the application (UI/UX) layer:
+- build002→003: tabbed interface, "AF Level" screen, watchdog/timeout improvements,
+  ImageProcessor external log integration (JA2GRC's software), random/vertical block scan order
+  option (to spread block loss under fading).
+- build003→004: hardening of the BSR logic, sending the header N times for callsign
+  reliability (configurable, default 5), automatic deletion of old images,
+  log output improvements.
 
-## ✅ DOĞRULANDI — Gerçek Kayıt Üzerinde Bit-Seviyesi Analiz (2026-08-06)
+## ✅ VERIFIED — Bit-Level Analysis on a Real Recording (2026-08-06)
 
-`research/sampleaudio/KG-STV_MSK_text.mp3` kaydı, `research/decoder/` altındaki Python prototip
-demodülatörle uçtan uca çözüldü. Sonuç: **çözülen metin okunabilir düz metin olarak çıktı**:
+The recording `research/sampleaudio/KG-STV_MSK_text.mp3` was decoded end to end with the Python
+prototype demodulator under `research/decoder/`. Result: **the decoded text came out as readable plain text**:
 
 ```
 TEST3>The Quick Brown Fox Jumps Over The Lazy Dog 0123456789
 ```
 
-Bu, aşağıdaki tüm noktaları **kesin olarak** doğruluyor:
+This **conclusively** verifies all of the following points:
 
-1. **Bit dönüşümü:** space (1200 Hz) = bit `0`, mark (1800 Hz) = bit `1`. Zamanda soldan sağa,
-   spec'teki bit dizeleriyle birebir eşleşiyor (ters çevirme/inversiyon yok).
-2. **Preamble:** Tam 256 bit, `01` deseni tekrarı — spec ile tam eşleşme.
-3. **Senkron kelimesi:** 63 bit, preamble'ın hemen ardından, spec'teki dizeyle **birebir**
-   eşleşme (sync'in kendisi hiç whitening'e uğramıyor).
-4. **Bilgi chunk'ı (header) kodlama sırası:** ham 54 bit → **rate-1/2, K=7 konvolüsyonel
-   kodlama** (NASA standart üreteç polinomları **171, 133 oktal**; çıkış sırası her girdi biti
-   için **(G133_biti, G171_biti)**) → 108 kodlanmış bit → bu 108 bit üzerine **127-bit whitening
-   M-sequence XOR'lanıyor, sayaç HER CHUNK'IN BAŞINDA 0'dan yeniden başlıyor** (global/sürekli
-   sayaç DEĞİL). Gerçek kayıt üzerinde Viterbi decode **sıfır hata (metric=0)** ile tam çözüldü.
-5. **Header alan değerleri** (bu örnek için): `sys=0, com=0(metin), c=0(NORM), m=0(MSK), x=0,
-   y=0, sc=10, size=480(bit)`. `sc=10` değeri, aynı dağıtımdaki `kgstv.ini` dosyasındaki
-   `ImageQ=10` ayarıyla **birebir örtüşüyor** — çapraz doğrulama.
-6. **Veri chunk'ı kodlama sırası:** `c=0` (NORM) olduğunda veri chunk'ı konvolüsyonel kodlama
-   **almıyor** — sadece ham veri bitleri + kendi 16-bit CRC'si, ayrıca **kendi whitening sayacı
-   sıfırdan başlıyor** (header'ın sayacından bağımsız). `size` alanı **bit** cinsinden veri
-   uzunluğunu ifade ediyor (byte değil — 480 bit = 60 byte, kayıt süresine de tam uyuyor).
-7. **CRC algoritması — TAM TESPİT EDİLDİ:** **CRC-16/AUG-CCITT**
-   (`poly=0x1021, init=0x1D0F, refin=false, refout=false, xorout=0x0000`), bit-serial olarak
-   hesaplanıyor. Hem header'ın 38-bit alanı üzerindeki CRC (`0x6702`) hem data chunk'ının 480-bit
-   metin verisi üzerindeki CRC (`0xA2D1`) bu algoritmayla **tam olarak doğrulandı**.
+1. **Bit mapping:** space (1200 Hz) = bit `0`, mark (1800 Hz) = bit `1`. Left to right in time,
+   it matches the bit strings in the spec exactly (no reversal/inversion).
+2. **Preamble:** Exactly 256 bits, repeating `01` pattern — an exact match with the spec.
+3. **Sync word:** 63 bits, immediately after the preamble, an **exact** match with the string in the
+   spec (the sync itself never undergoes whitening).
+4. **Info chunk (header) coding order:** raw 54 bits → **rate-1/2, K=7 convolutional
+   coding** (NASA standard generator polynomials **171, 133 octal**; output order for each input bit
+   **(G133_bit, G171_bit)**) → 108 encoded bits → the **127-bit whitening M-sequence is XORed onto these
+   108 bits, with the counter restarting from 0 AT THE START OF EACH CHUNK** (NOT a global/continuous
+   counter). On the real recording the Viterbi decode succeeded fully with **zero errors (metric=0)**.
+5. **Header field values** (for this example): `sys=0, com=0(text), c=0(NORM), m=0(MSK), x=0,
+   y=0, sc=10, size=480(bits)`. The value `sc=10` **matches exactly** the `ImageQ=10` setting in the
+   `kgstv.ini` file in the same distribution — a cross-check.
+6. **Data chunk coding order:** when `c=0` (NORM), the data chunk does **not get** convolutional
+   coding — just the raw data bits + its own 16-bit CRC, and **its own whitening counter starts
+   from zero** (independent of the header's counter). The `size` field expresses the data length in
+   **bits** (not bytes — 480 bits = 60 bytes, which also fits the recording duration exactly).
+7. **CRC algorithm — FULLY IDENTIFIED:** **CRC-16/AUG-CCITT**
+   (`poly=0x1021, init=0x1D0F, refin=false, refout=false, xorout=0x0000`), computed bit-serially.
+   Both the CRC over the header's 38-bit field (`0x6702`) and the CRC over the data chunk's 480-bit
+   text data (`0xA2D1`) were **verified exactly** with this algorithm.
 
-### Doğrulanmış Encode/Decode Zinciri (metin/NORM modu için)
+### Verified Encode/Decode Chain (for text/NORM mode)
 
 ```
-TX sırası:  preamble(256×01) → sync(63bit, whitening YOK) →
-            [ham 54bit header → conv-encode(K=7,171/133) → 108bit → whiten(idx 0'dan)] →
-            [ham data bit'leri + CRC16-AUG-CCITT(16bit) → whiten(idx 0'dan, header'dan bağımsız sayaç)]
+TX order:   preamble(256×01) → sync(63bit, NO whitening) →
+            [raw 54bit header → conv-encode(K=7,171/133) → 108bit → whiten(from idx 0)] →
+            [raw data bits + CRC16-AUG-CCITT(16bit) → whiten(from idx 0, counter independent of the header)]
 ```
 
-Bu zincir hem encode hem decode yönünde (Rust implementasyonunda) simetrik olarak kurulabilir.
+This chain can be built symmetrically in both the encode and decode directions (in the Rust implementation).
 
-### Görüntü Modu Üzerinde Kısmi Doğrulama
+### Partial Verification in Image Mode
 
-`KG-STV_.10_scale.wav` (gerçek görüntü aktarımı, 174.8s) üzerinde ilk frame'i decode ettim:
-`{sys=0, com=6(ÇAĞRI İŞARETİ), c=0(NORM), m=1(4L-FSK), x=0, y=0, sc=3, size=40bit}` —
-**CRC doğrulandı (crc_ok=True)**, Viterbi metric=7 (kanalda gerçek/hafif gürültü var, beklenen).
-Bu, header çözme zincirinin (senkron bulma → conv-decode → CRC) **görüntü modunda da** çalıştığını
-kanıtlıyor. `com=6` göstermesi, görüntü aktarımından önce vericinin önce çağrı işaretini (callsign)
-duyurduğunu doğruluyor (readme3.txt'deki "çağrı işareti N kez tekrar gönderilsin" özelliğiyle
-tutarlı). `m=1` bu oturumda veri chunk'larının **4L-FSK** ile gönderildiğini gösteriyor.
+I decoded the first frame of `KG-STV_.10_scale.wav` (a real image transmission, 174.8s):
+`{sys=0, com=6(CALLSIGN), c=0(NORM), m=1(4L-FSK), x=0, y=0, sc=3, size=40bit}` —
+**CRC verified (crc_ok=True)**, Viterbi metric=7 (there is real/light noise on the channel, expected).
+This proves that the header decoding chain (sync finding → conv-decode → CRC) works **in image mode
+too**. `com=6` confirms that before the image transmission the transmitter first announces its callsign
+(consistent with the "send the callsign N times" feature in readme3.txt). `m=1` shows that in this
+session the data chunks are sent with **4L-FSK**.
 
-### 2026-08-07 Güncellemesi: Bilinen-Düz-Metinle Kalibrasyon — Kısmi Başarı
+### 2026-08-07 Update: Calibration with Known Plaintext — Partial Success
 
-Kullanıcının sağladığı kontrollü test görüntüleri (OH2UDS çağrı işareti, düz renk + çizgili,
-hem MSK hem 4L-FSK, hem NORM hem CONV) sayesinde artık **gerçek bilinen düz-metin** ("OH2UDS")
-ile kalibrasyon mümkün oldu — 5 farklı dosyadan (aynı çağrı işareti tekrarı) toplam 30 ölçüm
-toplanıp `docs/protocol_spec.md` bu bölümündeki eski "TEST3 varsayımı geçersiz" bulmacası
-çözüldü:
+Thanks to the controlled test images supplied by the user (OH2UDS callsign, solid colour + striped,
+both MSK and 4L-FSK, both NORM and CONV), calibration with **real known plaintext** ("OH2UDS") has now
+become possible — a total of 30 measurements were collected from 5 different files (repeats of the same
+callsign), and the old "TEST3 assumption invalid" puzzle in this section of `docs/protocol_spec.md` was
+solved:
 
-- **İşaret (pozitif/negatif) doğruluğu: %96 (23/24 sembol)** — kesin bir ilerleme
-- Bilinen etiketlerle küme merkezleri kalibre edildi: **[-230.5, -74.6, 93.6, 210.6] Hz**
-  (ideal ±100/±300 Hz'den belirgin şekilde sıkışık — muhtemelen gerçek/sentetik kayıt zincirinin
-  kendi frekans tepkisi)
-- Sembol doğruluğu **~%80-83**'e ulaştı — hem frekans-discriminator hem ton-korelasyon
-  yöntemiyle, **30 tekrar üzerinden ortalama almak bile sonucu değiştirmiyor** → kalan hatalar
-  gürültü değil, **sistematik/deterministik bir blok-arası girişim (ISI)**
-- **Pratik sınama:** düz beyaz görüntünün en küçük bloğunu (72 bit, 36 sembol) bu kalibre
-  merkezlerle decode etmeyi denedim — %80 sembol doğruluğu JPEG Huffman'ın sıfır hata
-  toleransı karşısında **yetersiz kaldı**, decode birkaç blok sonra bozuldu.
+- **Sign (positive/negative) accuracy: 96% (23/24 symbols)** — definite progress
+- Cluster centres were calibrated with the known labels: **[-230.5, -74.6, 93.6, 210.6] Hz**
+  (noticeably compressed compared with the ideal ±100/±300 Hz — probably the real/synthetic recording
+  chain's own frequency response)
+- Symbol accuracy reached **~80-83%** — with both the frequency-discriminator and the tone-correlation
+  methods, **even averaging over 30 repeats does not change the result** → the remaining errors are
+  not noise, but **systematic/deterministic inter-symbol interference (ISI)**
+- **Practical test:** I tried to decode the smallest block of the solid white image (72 bits, 36 symbols)
+  with these calibrated centres — 80% symbol accuracy **proved insufficient** against JPEG Huffman's
+  zero error tolerance; the decode broke down after a few blocks.
 
-**Kök neden (disassembly bulgusuyla tutarlı):** 4L-FSK'nin 200Hz ton aralığı 1200 baud sembol
-periyodunda tam ortogonal değil (MSK'nin 600Hz aralığının aksine) → basit sembol-bazlı (blok
-ortalaması ya da ton-korelasyonu) algılama yapısal olarak yetersiz kalıyor. **Sonraki adım:**
-gerçek CPFSK faz hafızasını hesaba katan bir **Maximum-Likelihood Sequence Detection (Viterbi
-tabanlı CPFSK demodülatörü)** — ayrı, iyi tanımlanmış bir mühendislik projesi.
+**Root cause (consistent with the disassembly finding):** 4L-FSK's 200Hz tone spacing is not exactly
+orthogonal over the 1200 baud symbol period (unlike MSK's 600Hz spacing) → simple per-symbol (block
+averaging or tone-correlation) detection is structurally insufficient. **Next step:**
+a **Maximum-Likelihood Sequence Detection (Viterbi-based CPFSK demodulator)** that takes the real CPFSK
+phase memory into account — a separate, well-defined engineering project.
 
-Eski, artık kısmen aşılmış not (tarihsel referans için bırakıldı):
+Old note, now partly superseded (left for historical reference):
 
-Bu 4L-FSK veri chunk'ının (çağrı işaretinin kendisi, 40 bit) çözümü ise **hâlâ açık** —
-hem ton-korelasyon hem ani-frekans (discriminator) yöntemleri denendi, **iki bağımsız
-kayıtta (`KG-STV_.10_scale`, `KG-STV_4LFSK_Norm`) tutarlı/tekrarlanabilir ama beklenen 4
-seviyeye net ayrılmayan** frekans okumaları elde edildi (6 çağrı-işareti tekrarı üzerinden
-ortalama alındı, gürültü değil — sistematik bir kalibrasyon/eşleme sorunu). Bilinen-düz-metin
-("TEST3", MSK modundan doğrulanmış) ile geriye doğru kalibrasyon denendi ama net bir eşleşme
-çıkmadı — **bu 4L-FSK kayıtlarındaki gerçek çağrı işareti "TEST3" olmayabilir**, yani varsayım
-geçersiz kalmış olabilir. Sonuç: MSK için demodülasyon tam kanıtlanmış ve üretim kalitesinde;
-**4L-FSK için ya gerçek düz-metin bilinmeli ya da `kgstv.exe`'nin demodülatör kodu (filtre/eşik
-sabitleri) incelenmeli**. Şimdilik açık bırakıldı (bkz. proje görev listesi #8) — MSK modu
-tek başına tam bir KG-STV implementasyonu için yeterli (encode taraf hem MSK hem 4L-FSK
-üretebilir; sadece 4L-FSK *decode* kalibrasyonu eksik).
+Decoding this 4L-FSK data chunk (the callsign itself, 40 bits) is **still open** —
+both tone-correlation and instantaneous-frequency (discriminator) methods were tried, and on **two
+independent recordings (`KG-STV_.10_scale`, `KG-STV_4LFSK_Norm`) frequency readings were obtained that are
+consistent/repeatable but do not separate cleanly into the expected 4 levels** (averaged over 6
+callsign repeats, not noise — a systematic calibration/mapping problem). Backward calibration with known
+plaintext ("TEST3", verified from MSK mode) was tried but no clear match came out — **the real callsign
+in these 4L-FSK recordings may not be "TEST3"**, i.e. the assumption may be invalid. Conclusion: for MSK
+the demodulation is fully proven and of production quality;
+**for 4L-FSK either the real plaintext must be known or `kgstv.exe`'s demodulator code (filter/threshold
+constants) must be examined**. Left open for now (see project task list #8) — MSK mode on its own is
+sufficient for a complete KG-STV implementation (the encode side can produce both MSK and 4L-FSK;
+only the 4L-FSK *decode* calibration is missing).
 
-### ✅ Tam Transmisyon Yürüyüşü (Frame Walking) — Gerçek Görüntü Blokları Çıkarıldı
+### ✅ Full Transmission Walk (Frame Walking) — Real Image Blocks Extracted
 
-`research/decoder/frame_walker.py`, ton-korelasyon demodülatörü kullanarak `KG-STV_MSK_Norm.wav`
-kaydının **tamamını** (148.9 saniye) baştan sona dolaştı. Sonuç: 5 kez tekrarlanan çağrı işareti
-duyurusu (`com=6, "TEST3"`, hepsi CRC-valid), ardından **22 farklı koordinatta gerçek görüntü
-bloğu (`com=1`)**, çoğu geçerli CRC ile. Bu şunu kesinleştiriyor:
+`research/decoder/frame_walker.py`, using the tone-correlation demodulator, walked the **whole** of the
+`KG-STV_MSK_Norm.wav` recording (148.9 seconds) from start to finish. Result: a callsign announcement
+repeated 5 times (`com=6, "TEST3"`, all CRC-valid), followed by **real image blocks (`com=1`) at 22
+different coordinates**, most with valid CRCs. This establishes that:
 
-- Ardışık frame'ler arasında **preamble YOK, sadece 63-bit senkron kelimesi tekrarlanıyor**
-  (256-bit preamble sadece transmisyonun en başında bir kez gönderiliyor).
-- Header'daki `x`,`y` alanları gerçekten blok koordinatı olarak davranıyor (0-19, 0-14 aralığında,
-  320×240/16×16=20×15 blok ızgarasıyla tam uyumlu).
-- `size` alanı blok başına **değişken** (JPEG sıkıştırmasının doğası — düz/tek renk alanlar çok
-  kısa, detaylı alanlar daha uzun); bit sayısı 8'in katı olmak zorunda değil (örn. 378 bit) —
-  bu, bloğun **standart JPEG dosya formatı değil, salt entropy-coded bitstream** (byte hizalama
-  veya JPEG marker/stuffing olmadan) olarak paketlendiğini gösteriyor.
-- Bazı düz/tekrarlı görüntü alanları (örn. gökyüzü gibi tek renkli bölgeler) **birebir aynı kısa
-  bayt dizisini** üretiyor (`6532994ca0` dört farklı koordinatta tekrarlandı) — DC-baskın,
-  AC-katsayıları sıfır olan JPEG blokları için beklenen davranış (Huffman EOB kısalığı).
-- CRC hatası veren bloklar muhtemelen ya gerçek kanal bozulması (gerçek RF/ses kaydı gürültüsü)
-  ya da 148 saniyelik kayıt boyunca birikmiş küçük saat kayması (tek bir sabit `anchor` tüm
-  dosya için kullanıldı) — üretim kalitesinde bir decoder için sembol-bazlı zamanlama kurtarma
-  (timing recovery loop) gerekecek.
+- Between consecutive frames there is **NO preamble, only the 63-bit sync word is repeated**
+  (the 256-bit preamble is sent only once at the very start of the transmission).
+- The `x`,`y` fields in the header really behave as block coordinates (in the range 0-19, 0-14,
+  fully consistent with the 320×240/16×16=20×15 block grid).
+- The `size` field is **variable** per block (the nature of JPEG compression — flat/single-colour areas
+  are very short, detailed areas longer); the bit count does not have to be a multiple of 8 (e.g. 378
+  bits) — this shows the block is packed **not in the standard JPEG file format, but as a pure
+  entropy-coded bitstream** (without byte alignment or JPEG markers/stuffing).
+- Some flat/repetitive image areas (e.g. single-colour regions such as sky) produce **exactly the same
+  short byte sequence** (`6532994ca0` was repeated at four different coordinates) — the expected behaviour
+  for DC-dominant JPEG blocks with zero AC coefficients (Huffman EOB brevity).
+- Blocks giving CRC errors are probably either real channel corruption (real RF/audio recording noise)
+  or small clock drift accumulated over the 148-second recording (a single fixed `anchor` was used for
+  the whole file) — a production-quality decoder will need symbol-based timing recovery
+  (timing recovery loop).
 
-**Sonraki adım:** CRC-valid blok baytlarını gerçek bir baseline-JPEG Huffman/DCT decoder'a
-besleyip (varsayılan/standart tablolarla dene, tutmazsa `kgstv.exe`'den tabloları çıkar) piksel
-verisine çevirmek — bu, "resmin encode/decode" sorusunun son parçası.
+**Next step:** feed the CRC-valid block bytes into a real baseline-JPEG Huffman/DCT decoder (try with
+default/standard tables; if they don't fit, extract the tables from `kgstv.exe`) and convert them into
+pixel data — this is the last piece of the "encode/decode of the picture" question.
 
-### ✅ KRİTİK DÜZELTME — Tile İçindeki 6 Blok DC Zincirlemez (2026-08-07)
+### ✅ CRITICAL CORRECTION — The 6 Blocks in a Tile Do Not Chain DC (2026-08-07)
 
-Gerçek off-air kayıtlarla (TA4SO, BBC test kartı) piksel-piksel karşılaştırma yapılınca, CRC
-geçen bloklarda bile renklerin referansla uyuşmadığı görüldü. Kontrollü **düz renk** test
-görüntüleriyle (tamamen kırmızı / tamamen mavi 320×240, OH2UDS tarafından kaydedilmiş) kesin
-teşhis kondu: tamamen düz bir 16×16 karonun 4 Y bloğu, standart JPEG'in aksine **birbirine
-zincirlenmeden**, her biri **bağımsız, sıfırdan başlayan bir DC değeri** taşıyor. Eski kodumuz
-(klasik JPEG MCU mantığıyla) bu 4 değeri konvülasyon zinciri gibi üst üste **biriktiriyordu**
-(`dc = dc_pred + diff; dc_pred = dc`), bu da düz kırmızı bir karoda bile -58,-116,-174,-232 gibi
-saçma, gittikçe büyüyen bir dizi üretiyordu (oysa gerçek fark ≈0 olmalıydı — görüntü tamamen
-düz). Aynı zincirleme hatası Cb/Cr arasında da vardı.
+When a pixel-by-pixel comparison was made with real off-air recordings (TA4SO, BBC test card), it was
+seen that even in blocks passing CRC the colours did not match the reference. A definitive diagnosis
+was made with controlled **solid colour** test images (completely red / completely blue 320×240,
+recorded by OH2UDS): unlike standard JPEG, the 4 Y blocks of a completely flat 16×16 tile each carry an
+**independent DC value starting from zero**, **without being chained to each other**. Our old code
+(with the classic JPEG MCU logic) **accumulated** these 4 values on top of each other like a convolution
+chain (`dc = dc_pred + diff; dc_pred = dc`), which produced an absurd, ever-growing sequence such as
+-58,-116,-174,-232 even for a solid red tile (whereas the real difference should have been ≈0 — the image
+is completely flat). The same chaining bug also existed between Cb/Cr.
 
-**Düzeltme:** `research/decoder/jpeg_block.py::decode_16x16_block` — 6 bloğun (Y0,Y1,Y2,Y3,Cr,Cb)
-her biri artık **predictor=0 ile bağımsız** decode ediliyor (chain YOK).
+**Fix:** `research/decoder/jpeg_block.py::decode_16x16_block` — each of the 6 blocks (Y0,Y1,Y2,Y3,Cr,Cb)
+is now decoded **independently with predictor=0** (NO chain).
 
-**Doğrulama:** BBC test kartı (`KG-STV_MSK_Convolution.wav`) ile referans (`1.0_scale.png`)
-arasındaki ortalama piksel farkı **222.99 → 125.37**'ye düştü ve görsel olarak kızın yüzü,
-kırmızı eşarbı, yeşil palyaço ve alttaki "BBC" yazısı artık **açıkça tanınabilir**. Yatay/dikey
-kırmızı-beyaz çizgili kontrollü test görüntüleri **300/300 karo, keskin ve doğru kenarlarla**
-decode edildi. Gerçek TA4SO kaydında ortalama fark (sadece decode edilen 57 karo) **~117**'ye
-düştü ve görsel olarak lacivert arka plan + krem/sarı detaylar artık referansla tutarlı.
+**Verification:** The mean pixel difference between the BBC test card (`KG-STV_MSK_Convolution.wav`) and
+the reference (`1.0_scale.png`) dropped from **222.99 → 125.37**, and visually the girl's face, the red
+scarf, the green clown and the "BBC" text at the bottom are now **clearly recognizable**. The controlled
+horizontal/vertical red-white striped test images were decoded **300/300 tiles, with sharp and correct
+edges**. On the real TA4SO recording the mean difference (only the 57 decoded tiles) dropped to **~117**,
+and visually the navy background + cream/yellow details are now consistent with the reference.
 
-### ✅ JPEG Entropy Katmanı — Standart Tablolarla Doğrulandı
+### ✅ JPEG Entropy Layer — Verified with the Standard Tables
 
-`research/decoder/jpeg_block.py`, standart ITU T.81 Annex K Huffman tabloları (DC/AC,
-luma/chroma) ve standart zigzag sırasıyla, frame11'in CRC-doğrulanmış 186-bit ham blok verisini
-decode etti:
+`research/decoder/jpeg_block.py`, using the standard ITU T.81 Annex K Huffman tables (DC/AC,
+luma/chroma) and the standard zigzag order, decoded frame11's CRC-verified 186-bit raw block data:
 
-- **Bit tüketimi tam olarak 186/186** — hiçbir Huffman senkron hatası, hiçbir EOF/format hatası
-  olmadan 6 blok (4×Y + 1×Cb + 1×Cr) baştan sona ayrıştırıldı. Yanlış bir tablo seti ile bunun
-  şansla olması istatistiksel olarak neredeyse imkânsız → **KG-STV'nin entropy-coding katmanı
-  standart JPEG Huffman tablolarıyla bit-uyumlu**.
-- İki düz Y bloğu (sadece DC, AC katsayısı yok) **tam olarak geçerli gri ton değerlerine**
-  (98.0 ve 68.0 — 0-255 aralığında) çözüldü. Cb/Cr blokları DC=0 → 128 (nötr renk).
-- İki blok AC katsayısı içeriyor (gerçek doku); bu bloklarda piksel değerleri 0-255 aralığının
-  dışına taşıyor — bu, Huffman/tablo hatası değil, **kuantizasyon tablosu ölçeklendirme
-  formülünün** (`sc` 4-bit alanı → IJG "quality 1-100" formülü) yanlış kalibre edilmiş olmasından
-  kaynaklanıyor. `sc` alanı sadece 4 bit (0-15) olduğu için IJG'nin 1-100 ölçeğiyle doğrudan
-  eşleşmiyor; gerçek eşleme (`sc` → skala çarpanı) henüz belirlenmedi.
+- **Bit consumption exactly 186/186** — the 6 blocks (4×Y + 1×Cb + 1×Cr) were parsed from start to
+  finish without any Huffman sync error or any EOF/format error. With a wrong set of tables this
+  happening by chance is statistically almost impossible → **KG-STV's entropy-coding layer is
+  bit-compatible with the standard JPEG Huffman tables**.
+- Two flat Y blocks (DC only, no AC coefficients) decoded to **perfectly valid grey values**
+  (98.0 and 68.0 — in the 0-255 range). The Cb/Cr blocks DC=0 → 128 (neutral colour).
+- Two blocks contain AC coefficients (real texture); in these blocks the pixel values overflow outside
+  the 0-255 range — this is not a Huffman/table error, but comes from the **quantization table scaling
+  formula** (`sc` 4-bit field → IJG "quality 1-100" formula) being miscalibrated. Since the `sc` field
+  is only 4 bits (0-15) it does not map directly onto IJG's 1-100 scale; the real mapping (`sc` → scale
+  multiplier) has not been determined yet.
 
-### ✅ `sc` → Kuantizasyon Ölçeği — ÇÖZÜLDÜ (kgstv.exe binary analizi + gerçek piksel doğrulaması)
+### ✅ `sc` → Quantization Scale — RESOLVED (kgstv.exe binary analysis + real pixel verification)
 
-`kgstv.exe` içinde standart JPEG Huffman tabloları (AC/DC luma/chroma) **birebir**, ve onlardan
-hemen önceki bellek bölgesinde **standart IJG kalite=50 taban kuantizasyon tabloları** (luma ve
-chroma, her ikisi de birebir) bulundu (`research/binaries/kgstv_extracted/kgstv/kgstv.exe`,
-offset ~907037 luma başlangıcı, ~907117 chroma başlangıcı — 4 bayt/değer, big-endian paketli).
+Inside `kgstv.exe` the standard JPEG Huffman tables (AC/DC luma/chroma) were found **verbatim**, and in
+the memory region just before them the **standard IJG quality=50 base quantization tables** (luma and
+chroma, both verbatim) (`research/binaries/kgstv_extracted/kgstv/kgstv.exe`,
+offset ~907037 start of luma, ~907117 start of chroma — 4 bytes/value, packed big-endian).
 
-Gerçek `KG-STV_MSK_Norm.wav` kaydından decode edilen düz (AC katsayısız) bloklardan (`sc=10`,
-DC=-3→piksel 98.0, DC=-6→piksel 68.0) geriye doğru hesaplama: kullanılan `qt[0,0]=80`. Standart
-IJG formülüyle **quality=10** için: `scale=5000/10=500`, `qt[0,0]=floor((16×500+50)/100)=80` —
-**tam eşleşme**. Yani:
+Back-calculation from flat (no AC coefficient) blocks decoded from the real `KG-STV_MSK_Norm.wav`
+recording (`sc=10`, DC=-3→pixel 98.0, DC=-6→pixel 68.0): the `qt[0,0]` used is 80. With the standard
+IJG formula for **quality=10**: `scale=5000/10=500`, `qt[0,0]=floor((16×500+50)/100)=80` —
+**exact match**. So:
 
-> **`sc` alanı, IJG JPEG "quality" parametresinin (1–100 ölçeği) doğrudan kendisidir.**
-> Standart formül: `scale = quality<50 ? 5000/quality : 200-2*quality`;
-> `qval = clamp(floor((base_taban×scale+50)/100), 1, 255)`.
+> **The `sc` field is directly the IJG JPEG "quality" parameter itself (1–100 scale).**
+> Standard formula: `scale = quality<50 ? 5000/quality : 200-2*quality`;
+> `qval = clamp(floor((base×scale+50)/100), 1, 255)`.
 
-AC katsayılı blokların ilk denemede 0–255 aralığı dışına taşması bir ölçek hatası değildi —
-sadece **IDCT çıkışının 0–255'e kırpılmasını (clamp) unutmuştuk**; bu her JPEG decoder'ında
-standart bir son adımdır. Kırpma eklendiğinde AC'li bloklar tutarlı, gerçekçi bir desen
-gösteriyor (örn. yatay bantlama — bir fotoğraftaki yatay kenar/gradyanla tam uyumlu).
-`research/decoder/jpeg_block.py` güncellendi.
+The overflow of blocks with AC coefficients outside the 0–255 range on the first attempt was not a scale
+error — we had simply **forgotten to clamp the IDCT output to 0–255**; this is a standard final step in
+every JPEG decoder. With clamping added, the blocks with AC show a consistent, realistic pattern
+(e.g. horizontal banding — fully consistent with a horizontal edge/gradient in a photo).
+`research/decoder/jpeg_block.py` was updated.
 
-**Sonuç:** JPEG codec'inin **hem yapısı hem de kuantizasyon ölçeklendirmesi** artık tam olarak
-biliniyor. Görüntü katmanında kalan tek şey, üretim kalitesinde bir Rust implementasyonu yazmak
-— bilinmeyen bir parametre yok.
+**Conclusion:** **both the structure and the quantization scaling** of the JPEG codec are now fully
+known. All that remains in the image layer is to write a production-quality Rust implementation
+— there are no unknown parameters.
 
-#### ⚠️ DÜZELTME (2026-08-08) — `sc`, ham IJG "quality" değil, göndericinin "Scale" listesine bir İNDEKS
+#### ⚠️ CORRECTION (2026-08-08) — `sc` is not a raw IJG "quality", but an INDEX into the sender's "Scale" list
 
-Yukarıdaki analiz TEK bir noktada (`sc=10`) doğrulanmıştı ve doğruydu, ama YANLIŞ genellenmişti.
-Kullanıcı, orijinal Windows göndericisinde `sc` alanına karşılık gelen kontrolün ham bir
-"quality 1-100" değeri DEĞİL, 16 seçenekli bir **"Scale" açılır listesi** olduğunu bildirdi:
+The analysis above had been verified at a SINGLE point (`sc=10`) and was correct there, but it was
+generalized WRONGLY. The user reported that in the original Windows sender the control corresponding to
+the `sc` field is NOT a raw "quality 1-100" value, but a 16-option **"Scale" drop-down list**:
 
 ```
 0.07  0.08  0.09  0.1  0.2  0.3  0.4  0.5  0.6  0.8  1.0  1.20  1.40  1.60  1.80  2.0
 ```
 
-(16 değer = `sc`'nin 4-bit uzayı, index 10 = "1.0" = varsayılan, `ImageQ=10` ile birebir örtüşüyor
-— yukarıdaki `sc=10` doğrulamasıyla TUTARLI, ama SADECE o tek nokta için.) Kullanıcı ayrıca
-gerçek göndericinin ekranda gösterdiği tahmini aktarım sürelerini bildirdi:
+(16 values = the 4-bit space of `sc`, index 10 = "1.0" = default, matching `ImageQ=10` exactly
+— CONSISTENT with the `sc=10` verification above, but ONLY for that single point.) The user also
+reported the estimated transfer times the real sender shows on screen:
 
-| Scale (GUI) | `sc` (index) | Gösterilen süre |
+| Scale (GUI) | `sc` (index) | Displayed time |
 |---|---|---|
 | 0.07 | 0 | **7:43** |
 | 1.0 | 10 | **2:31** |
 | 2.0 | 15 | **1:54** |
 
-Yani `sc` arttıkça (Scale büyüdükçe) veri AZALIYOR (kaba kuantizasyon → kısa aktarım). Eski
-formülde (`quality=sc` doğrudan `5000/quality`'e besleniyordu) `sc` arttıkça kuantizasyon
-İNCELİYORDU — gözlemlenen yönün TAM TERSİ (ve "düşük sc'de hem renk hem görüntü kötü"
-şikâyetini açıklıyor: aslında ÇOK İNCE kuantizasyon deneniyordu, KABA değil).
+So as `sc` increases (as Scale gets larger) the data DECREASES (coarse quantization → short transfer).
+In the old formula (`quality=sc` fed directly into `5000/quality`), quantization got FINER as `sc`
+increased — the EXACT OPPOSITE of the observed direction (and it explains the complaint "at low sc both
+the colour and the image are bad": in fact VERY FINE quantization was being attempted, not COARSE).
 
-**Düzeltilmiş ilişki** (bkz. `kgstv-core/src/jpeg.rs::scale_qt`):
+**Corrected relationship** (see `kgstv-core/src/jpeg.rs::scale_qt`):
 
-> `internal_scale = SCALE_TABLE[sc] × 500.0` (500 = `sc=10`/"1.0" noktasındaki doğrulanmış IJG
-> ölçeği — `5000/10=500` ile aynı sabit, ama artık ham `quality` üzerinden DEĞİL, tablo
-> değerinin doğrudan çarpanı olarak kullanılıyor); `qval = clamp(floor((base×internal_scale+50)/100), 1, 255)`.
+> `internal_scale = SCALE_TABLE[sc] × 500.0` (500 = the verified IJG scale at the `sc=10`/"1.0" point
+> — the same constant as `5000/10=500`, but now used as a direct multiplier of the table value, NOT
+> via the raw `quality`); `qval = clamp(floor((base×internal_scale+50)/100), 1, 255)`.
 
-Bu hem `sc=10` noktasındaki doğrulanmış çıktıyı (500=1.0×500) KORUYOR hem de gözlemlenen
-yönü/orantıyı doğru veriyor — kendi encoder'ımızla ölçülen (gürültülü/en-kötü-durum içerikle)
-aktarım süreleri artık aynı trendi gösteriyor: sc=0→6'48", sc=10→1'42", sc=15→1'19" (mutlak
-değerler farklı görüntü içeriğinden dolayı birebir eşleşmiyor, ama yön ve büyüklük mertebesi
-tutarlı). `SCALE_TABLE`'ın (0.07…2.0) kendisinin kgstv.exe içinde nerede/nasıl saklandığı henüz
-binary analizle doğrulanmadı — şimdilik kullanıcı bildirimine güveniliyor.
+This both PRESERVES the verified output at the `sc=10` point (500=1.0×500) and gives the observed
+direction/proportion correctly — transfer times measured with our own encoder (with noisy/worst-case
+content) now show the same trend: sc=0→6'48", sc=10→1'42", sc=15→1'19" (the absolute values do not
+match exactly because of different image content, but the direction and order of magnitude are
+consistent). Where/how `SCALE_TABLE` (0.07…2.0) itself is stored inside kgstv.exe has not yet been
+verified by binary analysis — for now we rely on the user's report.
 
-#### ⚠️ DÜZELTME #2 (2026-08-08) — büyüklük hâlâ yanlıştı; GERÇEK referans görüntülerle çözüldü
+#### ⚠️ CORRECTION #2 (2026-08-08) — the magnitude was still wrong; solved with REAL reference images
 
-Yukarıdaki düzeltme YÖNÜ doğru veriyordu (aktarım süresi trendi tutarlıydı) ama BÜYÜKLÜĞÜ
-hâlâ yanlıştı — kullanıcı "goruntu hala sc 2.0 disinda kotu" diye bildirdi (sadece en kaba
-ayar (`sc=15`, Scale=2.0) kabul edilebilir çıkıyordu, diğer HER değerde gri/nötr olması
-gereken alanlarda bile rastgele renk lekeleri görülüyordu).
+The correction above got the DIRECTION right (the transfer time trend was consistent) but the MAGNITUDE
+was still wrong — the user reported "image still bad except at sc 2.0" (only the coarsest
+setting (`sc=15`, Scale=2.0) came out acceptable; at EVERY other value random colour blotches appeared
+even in areas that should have been grey/neutral).
 
-`research/sampleaudio/`'da, tam olarak bu sorunu araştırmaya uygun bir hazine bulundu: iki
-GERÇEK off-air kaydı bilinen `Scale` ayarlarıyla (`KG-STV_.10_scale.wav` → header'dan
-`sc=3` doğrulandı, `KG-STV_.50_scale.wav` → `sc=7` doğrulandı) VE bunlara karşılık gelen,
-orijinal Windows ALICISINDAN alınmış piksel-hassasiyetinde referans görüntüler (`1scale.jpg`,
-`5scale.png`, ayrıca varsayılan `sc=10` için `1.0_scale.png` — üçü de tam 320×240, karo
-ızgarasıyla birebir hizalı).
+In `research/sampleaudio/`, a treasure trove perfectly suited to investigating exactly this problem was
+found: two REAL off-air recordings with known `Scale` settings (`KG-STV_.10_scale.wav` → `sc=3` verified
+from the header, `KG-STV_.50_scale.wav` → `sc=7` verified) AND the matching pixel-precise reference
+images taken from the original Windows RECEIVER (`1scale.jpg`, `5scale.png`, plus `1.0_scale.png` for
+the default `sc=10` — all three exactly 320×240, aligned exactly with the tile grid).
 
-Bu üç dosya çiftiyle, düz/tek-renkli (AC≈0) çok sayıda (15+) karo üzerinde geriye doğru
-hesaplama yapıldı (`decode_tile_raw_dc` tanı yardımcısı ile ham DC katsayıları çıkarılıp,
-referans görüntüdeki aynı karo konumunun ortalama Y/Cb/Cr'siyle eşleştirilerek): gerçek
-`qval`, Düzeltme #1'in öngördüğünden TUTARLI ŞEKİLDE ~5× DAHA KÜÇÜK çıktı, ve üç nokta da
-(sc=3, sc=7, sc=10) TEK VE ÇOK BASİT bir ilişkiye mükemmel uydu:
+With these three file pairs, a back-calculation was done on many (15+) flat/single-colour (AC≈0) tiles
+(extracting the raw DC coefficients with the `decode_tile_raw_dc` diagnostic helper and matching them
+against the mean Y/Cb/Cr of the same tile position in the reference image): the real `qval` came out
+CONSISTENTLY ~5× SMALLER than Correction #1 predicted, and all three points (sc=3, sc=7, sc=10) fit a
+SINGLE, VERY SIMPLE relationship perfectly:
 
-> **`qval = round(taban_tablo_değeri × SCALE_TABLE[sc])`**
+> **`qval = round(base_table_value × SCALE_TABLE[sc])`**
 >
-> Yani "Scale" göstergedeki ondalık değerin (0.07…2.0) KENDİSİ, taban (quality=50)
-> kuantizasyon tablosunun DOĞRUDAN çarpanı — ara bir IJG "quality" formülüne (`5000/quality`
-> vb.) hiç gerek yok. İsim zaten "Scale" (ölçek/çarpan) — soyut bir "quality" parametresi
-> değil, orijinal yazılımın adlandırmasıyla tam tutarlı en basit yorum bu.
+> I.e. the decimal value shown in "Scale" (0.07…2.0) is ITSELF the DIRECT multiplier of the base
+> (quality=50) quantization table — there is no need at all for an intermediate IJG "quality" formula
+> (`5000/quality` etc.). The name is already "Scale" (scale/multiplier) — not an abstract "quality"
+> parameter; this is the simplest interpretation, fully consistent with the original software's naming.
 
-Bu formülle yeniden decode edilen her iki gerçek kayıt da (bkz. `kgstv-core/src/jpeg.rs`
-`scale_qt` dokümantasyonu) artık referans görüntülerle GÖRSEL OLARAK neredeyse birebir
-örtüşüyor — eskiden gri/nötr alanlarda görülen rastgele renk lekeleri tamamen kayboldu.
+Both real recordings decoded again with this formula (see the `kgstv-core/src/jpeg.rs` `scale_qt`
+documentation) now VISUALLY match the reference images almost exactly — the random colour blotches
+previously seen in grey/neutral areas have disappeared completely.
 
-**Not:** Önceki `sc=10 → qt[0,0]=80` iddiası (yukarıdaki "ÇÖZÜLDÜ" bölümü) tek bir düz bloktan
-geriye doğru hesaplanmıştı; o ölçümün orijinal kaynağı bağımsız olarak yeniden doğrulanamadı.
-Buradaki 15+ noktalı, gerçek referans-görüntü çapraz kontrolü çok daha güçlü bir kanıt —
-`decodes_real_captured_solid_red_tile` testi (AYNI ham bitlerle, sadece düzeltilmiş
-beklenen değerlerle) bu düzeltmeyle güncellendi. `SCALE_TABLE[sc]`'nin kgstv.exe içinde
-nerede/nasıl saklandığı hâlâ binary analizle doğrulanmadı.
+**Note:** The earlier `sc=10 → qt[0,0]=80` claim (the "RESOLVED" section above) had been
+back-calculated from a single flat block; the original source of that measurement could not be
+independently re-verified. The 15+ point cross-check against real reference images here is much
+stronger evidence — the `decodes_real_captured_solid_red_tile` test (with the SAME raw bits, only with
+corrected expected values) was updated with this correction. Where/how `SCALE_TABLE[sc]` is stored inside
+kgstv.exe has still not been verified by binary analysis.
 
-### ✅ `kgstv-modem` (Rust ses I/O + MSK modem) — Gerçek Kayıtla Uçtan Uca Doğrulandı (2026-08-07)
+### ✅ `kgstv-modem` (Rust audio I/O + MSK modem) — Verified End to End with a Real Recording (2026-08-07)
 
-`src/kgstv-modem/` cargo workspace üyesi olarak yazıldı: `wav` (hound tabanlı WAV I/O, örnekleme
-hızı dosyadan dinamik okunur), `filter` (RBJ biquad bant-geçiren, ileri+geri filtfilt), `msk`
-(disassembly ile doğrulanmış gerçek sürekli-faz sentezi + Hanning-pencereli DFT ton-korelasyonu
-demodülasyonu), `sync` (kaba+ince iki aşamalı senkron kelimesi arama) ve bunları
-`kgstv-core::frame`/`jpeg` ile birleştiren üst seviye `session` (ardışık frame yürüyüşü + TX
-oturum derleyicisi).
+`src/kgstv-modem/` was written as a cargo workspace member: `wav` (hound-based WAV I/O, the sample
+rate is read dynamically from the file), `filter` (RBJ biquad band-pass, forward+backward filtfilt), `msk`
+(true continuous-phase synthesis verified by disassembly + Hanning-windowed DFT tone-correlation
+demodulation), `sync` (two-stage coarse+fine sync-word search) and a top-level `session` combining them
+with `kgstv-core::frame`/`jpeg` (sequential frame walk + TX session builder).
 
-Gerçek `samples/OH2UDS-*-mode-msk-*.wav` kayıtlarında (`cargo run -p kgstv-modem --release
---example decode_wav`) uçtan uca doğrulama:
-- Senkron, kaydın başından ~2.93sn sonra (kayıt cihazı başlatma gecikmesi) doğru şekilde
-  bulundu — kaba arama adımının `tb/4` (~sembol süresinin dörtte biri) olması ve ince aramanın
-  eşitlik durumunda kaba sonuca en yakın konumu tercih etmesi (aksi hâlde `window()`'ın negatif
-  konumları 0'a clamp etmesi sahte eşitliklere yol açıyordu) gerekiyordu.
-- `duz-kirmizi` (solid red) kaydı: 346 frame, **300/300 görüntü tile'ı** (`header_metric=0`,
-  yani Viterbi'de sıfır bit hatası; tüm veri CRC'leri geçti) decode edildi, üretilen görüntü
-  tam olarak beklenen **RGB=(178,0,0)** — `kgstv-core::jpeg` testindeki gerçek yakalanan
-  kırmızı tile ile bit-eşleşiyor.
-- `horizontal-kirmizi-beyaz` (CONV kodlu) kaydı: yine 300/300 tile decode edildi; kırmızı/beyaz
-  sınırındaki 1-2 geçiş tile'ında beklenen lossy-JPEG kenar bulanıklığı (küçük renk karışımı,
-  ~%0.6 piksel) gözlendi — bu bir decoder hatası değil, `sc=10` (düşük kalite) kuantizasyonun
-  keskin bir kenarda beklenen davranışı.
+End-to-end verification on the real `samples/OH2UDS-*-mode-msk-*.wav` recordings (`cargo run -p kgstv-modem --release
+--example decode_wav`):
+- The sync was correctly found ~2.93 s after the start of the recording (recorder start-up
+  delay) — this required the coarse search step to be `tb/4` (~a quarter of the symbol duration) and
+  the fine search to prefer the position closest to the coarse result on a tie (otherwise `window()`
+  clamping negative positions to 0 led to spurious ties).
+- `duz-kirmizi` (solid red) recording: 346 frames, **300/300 image tiles** decoded (`header_metric=0`,
+  i.e. zero bit errors in Viterbi; all data CRCs passed); the image produced is exactly the expected
+  **RGB=(178,0,0)** — bit-matching the real captured red tile in the `kgstv-core::jpeg` test.
+- `horizontal-kirmizi-beyaz` (horizontal red-white, CONV coded) recording: again 300/300 tiles decoded;
+  the expected lossy-JPEG edge blurring (slight colour mixing, ~0.6% of pixels) was observed in the 1-2
+  transition tiles on the red/white boundary — this is not a decoder bug but the expected behaviour of
+  `sc=10` (low quality) quantization at a sharp edge.
 
-**Sonuç:** MSK ses katmanı artık gerçek off-air/kontrollü kayıtlarla üretim kalitesinde
-doğrulanmış durumda — WAV'dan piksel-doğru görüntüye kadar tüm zincir Rust'ta çalışıyor.
+**Conclusion:** The MSK audio layer is now verified at production quality with real off-air/controlled
+recordings — the whole chain from WAV to a pixel-correct image works in Rust.
 
-### ✅ 4L-FSK — MLSD/Viterbi Demodülatörü Çözüldü (2026-08-07)
+### ✅ 4L-FSK — MLSD/Viterbi Demodulator Solved (2026-08-07)
 
-Yukarıdaki kalibrasyon notunda tespit edilen kök neden (200Hz ton aralığı 1200 baud'da
-ortogonal değil → bağımsız/hafızasız sembol kararları sistematik ISI'ye takılıyor, ~%80-83
-sembol doğruluğunda tıkanıyor) için önerilen çözüm — CPFSK faz-hafızasını hesaba katan bir
-Maximum-Likelihood Sequence Detection (Viterbi) — `src/kgstv-modem/src/fsk4.rs`'de uygulandı.
+The solution proposed for the root cause identified in the calibration note above (the 200Hz tone
+spacing is not orthogonal at 1200 baud → independent/memoryless symbol decisions get stuck on systematic
+ISI, plateauing at ~80-83% symbol accuracy) — a Maximum-Likelihood Sequence Detection (Viterbi) that
+takes CPFSK phase memory into account — was implemented in `src/kgstv-modem/src/fsk4.rs`.
 
-**Anahtar matematiksel gözlem:** disassembly ile doğrulanmış modülatör formülüyle
-(`frekans = seviye×300+1500`, sürekli faz), 1200 baud'da dört olası frekansın taşıdığı
-taşıyıcı çevrimi (`freq/baud`): 1200→1, 1400→7/6, 1600→4/3=8/6, 1800→3/2=9/6. Yani seviye `L`
-sembolü, biriken faz durumunu **tam olarak `L×60°` ilerletir (mod 360°)** — modülasyon indeksi
-`h=Δf/baud=200/1200=1/6` rasyonel olduğundan bu YAKLAŞIK değil KESİN bir 6 durumlu CPM/CPFSK
-faz-trellis'i verir (standart CPM teorisi: `h=p/q` sadeleştirilmiş kesirse trellis `q`
-durumludur). `fsk4.rs`, bu 6 durumlu trellis üzerinde tam bir Viterbi/MLSD çalıştırıp sembol
-dizisini faz sürekliliğini doğru hesaba katarak kararlaştırıyor (basit ton-korelasyonun aksine).
+**Key mathematical observation:** with the modulator formula verified by disassembly
+(`frequency = level×300+1500`, continuous phase), the carrier cycles (`freq/baud`) carried by the four
+possible frequencies at 1200 baud are: 1200→1, 1400→7/6, 1600→4/3=8/6, 1800→3/2=9/6. So a level-`L`
+symbol advances the accumulated phase state by **exactly `L×60°` (mod 360°)** — since the modulation
+index `h=Δf/baud=200/1200=1/6` is rational, this gives an EXACT, not APPROXIMATE, 6-state CPM/CPFSK
+phase trellis (standard CPM theory: if `h=p/q` is a reduced fraction, the trellis has `q`
+states). `fsk4.rs` runs a full Viterbi/MLSD over this 6-state trellis and decides the symbol sequence
+correctly accounting for phase continuity (unlike simple tone correlation).
 
-**Karşılaşılan iki ek engel (ikisi de gerçek kayıtla test edilirken bulundu, sentetik testler
-kazara gizliyordu):**
-1. **Bilinmeyen başlangıç faz DURUMU:** Veri chunk'ının başındaki mutlak faz, kendinden önceki
-   (her zaman MSK olan) senkron/header segmentinden gelen keyfi bir değerdir. İlk uygulama
-   yanlışlıkla durum 0'dan başlamayı zorluyordu (sentetik testler hep durum 0'da başladığı için
-   bu fark edilmiyordu) — düzeltme: Viterbi'ye 6 durumun hepsi için eşit/bilgisiz bir önsel
-   verildi, `[0,60°)` aralığında ek bir global faz-ofseti taraması ile birleştirildi.
-2. **İnce zamanlama kayması:** Gerçek kayıtlarda, MSK'nin büyüklük-bazlı (faz-uyumsuz)
-   demodülasyonuna TAMAMEN görünmez kalan ~birkaç örneklik sabit bir zamanlama kayması bulundu
-   (muhtemelen kayıt zincirinin grup gecikmesi) — faz-uyumlu (coherent) Viterbi korelasyonu
-   buna çok duyarlı. Bilinen-doğru MSK verisiyle çapraz doğrulanan bir teşhis aracıyla izole
-   edildi: `OH2UDS-duz-kirmizi-mode-4lfsk-code-normal-scale-1.wav`'da en iyi zamanlama kayması
-   **+4.5 örnek** bulununca Hamming mesafesi 8/94'ten **0/94**'e düştü. Çözüm: `[-8,+8]` örnek
-   aralığında ince bir kayma taraması (dosya için genelde sabit olduğundan ilk başarılı chunk'ta
-   bulunan kayma sonraki chunk'lara "ipucu" olarak taşınıyor, taramayı hızlandırıyor).
+**Two additional obstacles encountered (both found while testing with real recordings; synthetic tests
+happened to hide them):**
+1. **Unknown initial phase STATE:** The absolute phase at the start of the data chunk is an arbitrary
+   value carried over from the preceding (always MSK) sync/header segment. The first implementation
+   mistakenly forced starting from state 0 (since the synthetic tests always started in state 0 this went
+   unnoticed) — fix: Viterbi was given an equal/uninformative prior for all 6 states, combined with an
+   additional global phase-offset scan over `[0,60°)`.
+2. **Fine timing shift:** In real recordings a constant timing shift of ~a few samples was found that is
+   COMPLETELY invisible to MSK's magnitude-based (non-coherent) demodulation (probably the group delay of
+   the recording chain) — the phase-coherent Viterbi correlation is very sensitive to it. It was isolated
+   with a diagnostic tool cross-checked against known-correct MSK data: in
+   `OH2UDS-duz-kirmizi-mode-4lfsk-code-normal-scale-1.wav`, once the best timing shift of **+4.5 samples**
+   was found, the Hamming distance dropped from 8/94 to **0/94**. Solution: a fine shift scan over the
+   `[-8,+8]` sample range (since it is usually constant for a file, the shift found in the first
+   successful chunk is carried to subsequent chunks as a "hint", speeding up the scan).
 
-**Gerçek kayıtla sonuç** (`cargo run -p kgstv-modem --release --example decode_wav`):
-- `OH2UDS-duz-kirmizi-mode-4lfsk-code-normal-scale-1.wav` (NORM, hatasız düzeltme yok):
-  **287/300 tile** decode edildi, başarılı olan HER tile tam olarak beklenen **RGB=(178,0,0)**
-  ile bit-eşleşiyor (kısmi/bozuk bir tile yok — CRC-kapılı boru hattının beklenen "ya tam doğru
-  ya hiç" davranışı).
-- `OH2UDS-horizontal-kirmizi-beyaz-mode-4lfsk-code-convolution-scale-1.wav` (CONV, K=7
-  konvolüsyonel hata düzeltmeli): **299/300 tile** — CONV kodlamanın kalan sembol hatalarının
-  çoğunu düzelttiği, teorik beklentiyle tam tutarlı.
+**Result with real recordings** (`cargo run -p kgstv-modem --release --example decode_wav`):
+- `OH2UDS-duz-kirmizi-mode-4lfsk-code-normal-scale-1.wav` (NORM, no error correction):
+  **287/300 tiles** decoded; EVERY successful tile bit-matches exactly the expected **RGB=(178,0,0)**
+  (no partial/corrupted tiles — the expected "either fully correct or nothing" behaviour of a CRC-gated
+  pipeline).
+- `OH2UDS-horizontal-kirmizi-beyaz-mode-4lfsk-code-convolution-scale-1.wav` (CONV, with K=7
+  convolutional error correction): **299/300 tiles** — fully consistent with the theoretical expectation
+  that CONV coding corrects most of the remaining symbol errors.
 
-**Sonuç:** 4L-FSK artık gerçek off-air kalitesinde kayıtlarda **üretim kalitesine yakın**
-çalışıyor (~%96-99.7 tile başarı oranı, önceki ~%80 sembol-doğruluğu tıkanmasından — pratikte
-tek bir tile bile güvenilir decode edemeyen bir durumdan — devasa bir sıçrama). Kalan birkaç
-tile hatası muhtemelen gerçek kanal gürültüsü/geçici SNR düşüşleri (CONV kodlamayla neredeyse
-tamamen telafi ediliyor), yapısal bir eksiklik değil. `kgstv-modem::session`, header/senkron
-için her zaman MSK kullanırken (protokolün gerektirdiği gibi), veri chunk'ı için `hdr.m`
-alanına göre MSK/4L-FSK arasında otomatik geçiş yapıyor — hem RX (`decode_wav_sequential*`)
-hem TX (`encode_session_audio*`) tarafında.
+**Conclusion:** 4L-FSK now works at **near production quality** on real off-air quality recordings
+(~96-99.7% tile success rate — a huge leap from the earlier ~80% symbol-accuracy plateau, a situation
+in which in practice not even a single tile could be decoded reliably). The few remaining tile errors are
+probably real channel noise/transient SNR drops (almost entirely compensated by CONV coding), not a
+structural shortcoming. `kgstv-modem::session`, while always using MSK for header/sync (as the protocol
+requires), switches automatically between MSK/4L-FSK for the data chunk according to the `hdr.m`
+field — on both the RX (`decode_wav_sequential*`) and TX (`encode_session_audio*`) sides.
 
-### Hâlâ Doğrulanması Gereken (görüntü modu için)
+### Still To Be Verified (for image mode)
 
-Yukarıdakiler **metin + NORM + MSK** kombinasyonu için kanıtlanmış. Görüntü modu için ek doğrulama
-gerekiyor: `c=1` (CONV) durumunda veri chunk'ının konvolüsyonel kodlamasının tam davranışı (whitening
-sırası aynı mı), 4L-FSK'nin veri chunk'ında sembol-bit eşlemesi, ve 16×16 JPEG blok verisinin iç
-yapısı (quantization/Huffman tabloları). Bu doğrulamalar için `sampleaudio` klasöründeki
-`KG-STV_MSK_Convolution.mp3`, `KG-STV_4LFSK_*.mp3` ve `.10_scale`/`.50_scale` kayıtları kullanılacak.
+The above is proven for the **text + NORM + MSK** combination. Additional verification is needed for
+image mode: the exact behaviour of the data chunk's convolutional coding when `c=1` (CONV) (is the
+whitening order the same), the symbol-bit mapping of 4L-FSK in the data chunk, and the internal
+structure of the 16×16 JPEG block data (quantization/Huffman tables). For these verifications the
+`KG-STV_MSK_Convolution.mp3`, `KG-STV_4LFSK_*.mp3` and `.10_scale`/`.50_scale` recordings in the
+`sampleaudio` folder will be used.
 
-## Hâlâ Belirsiz / Doğrulanması Gereken Detaylar
+## Details Still Uncertain / To Be Verified
 
-readme.txt bit-seviyesinde çerçeveyi tarif ediyor ama şunlar hâlâ açık değil — bunlar için
-ya `kgstv.exe`'nin ilgili fonksiyonlarını disassemble etmemiz ya da gerçek bir off-air kayıt
-üzerinde bit-eşleştirme yapmamız gerekiyor:
+readme.txt describes the frame at bit level, but the following are still not clear — for these
+we need either to disassemble the relevant functions of `kgstv.exe` or to do bit matching on a real
+off-air recording:
 
--2. **RX ön-uç filtre zinciri kgstv.exe disassembly ile bulundu ve doğrulandı** (waveIn
-    callback @0x4033e8, radare2 ile takip edildi). Gerçek DSP zinciri:
+-2. **The RX front-end filter chain was found and verified via kgstv.exe disassembly** (waveIn
+    callback @0x4033e8, traced with radare2). The real DSP chain:
     ```
-    int16 PCM (44100Hz) → FILTER1 (51-tap anti-alias lowpass) → 4'e decimate (→11025Hz)
-                        → FILTER2 (51-tap, ~900–2000Hz bandpass) → [devamı çıkarılmadı]
+    int16 PCM (44100Hz) → FILTER1 (51-tap anti-alias lowpass) → decimate by 4 (→11025Hz)
+                        → FILTER2 (51-tap, ~900–2000Hz bandpass) → [rest not extracted]
     ```
-    Her iki filtrenin **tam katsayıları** binary'den okundu (dosya offset 841240 ve 841648,
-    51×8-byte double) ve `research/decoder/kgstv_filters.py`'ye kaydedildi. FILTER2'nin frekans
-    tepkisi hesaplandı: 0Hz'de -54dB (DC/hum reddi), 900-2000Hz'de düz (KG-STV ton bandı), 2500Hz
-    üstünde hızla düşüyor — **tam olarak** kanal-seçici bir bandpas filtre.
+    The **exact coefficients** of both filters were read from the binary (file offsets 841240 and 841648,
+    51×8-byte doubles) and saved to `research/decoder/kgstv_filters.py`. FILTER2's frequency
+    response was computed: -54dB at 0Hz (DC/hum rejection), flat at 900-2000Hz (KG-STV tone band),
+    falling off quickly above 2500Hz — **exactly** a channel-selecting bandpass filter.
 
-    Bu gerçek filtre zinciri Python'da uygulanıp `.10_scale` örneğinde header tekrar decode
-    edildi: **CRC doğrulandı** (metric=4), sonuç önceki basit Butterworth yaklaşımıyla aynı.
-    4L-FSK çağrı işareti verisi de bu gerçek filtrelerle tekrar denendi — **çıkan seviye dizisi
-    önceki (basit filtre) sonucuyla neredeyse birebir aynı** (bkz. aşağıdaki tablo), bu da
-    demodülasyonumuzun **gürültüden değil, gerçek/tutarlı bir sinyalden** kaynaklandığını
-    kanıtlıyor. Ancak sonuç hâlâ okunabilir ASCII vermiyor.
-    **Sonuç:** Filtre kalitesi sorunun kaynağı değildi (zaten yeterince iyiydi). Kalan
-    açıklamalardan en olası olanı: **bu örneklerdeki gerçek test metni "TEST3" değil** —
-    bilinen-düz-metin varsayımımız bu spesifik kayıtlar için geçersiz. Gerçek metin bilinmeden
-    (ya da RX'in sembol-karar/senkron mantığının tam izlenmesiyle) kalibrasyon tamamlanamıyor.
+    This real filter chain was implemented in Python and the header was decoded again on the `.10_scale`
+    sample: **CRC verified** (metric=4), the same result as the earlier simple Butterworth approach.
+    The 4L-FSK callsign data was also retried with these real filters — **the resulting level sequence
+    is almost exactly the same as the earlier (simple filter) result** (see the table below), which
+    proves that our demodulation comes **from a real/consistent signal, not from noise**. However the
+    result still does not give readable ASCII.
+    **Conclusion:** Filter quality was not the source of the problem (it was already good enough). The
+    most likely of the remaining explanations: **the real test text in these samples is not "TEST3"** —
+    our known-plaintext assumption is invalid for these specific recordings. Without knowing the real
+    text (or fully tracing the RX's symbol-decision/sync logic) the calibration cannot be completed.
 
--3. **RX zincirinin TAMAMI çıkarıldı: 4 gerçek FIR filtre + Hilbert dönüşümü + faz-farkı
-    ayrıştırıcı (discriminator).** Disassembly'e devam edilince şu tam mimari ortaya çıktı:
+-3. **The WHOLE RX chain was extracted: 4 real FIR filters + Hilbert transform + phase-difference
+    discriminator.** Continuing the disassembly revealed the following full architecture:
     ```
     int16 PCM (44100Hz)
       → FILTER1 (51-tap anti-alias lowpass)
-      → 4'e decimate (→11025Hz)
-      → FILTER2 (51-tap bandpass, ~900-2000Hz — KG-STV ton bandı)
-      → FILTER3 (51-tap Hilbert dönüştürücü — merkez katsayı TAM 0.0, tam antisimetrik
-                  → quadrature/imajiner bileşen üretiyor)
-      → faz = atan2(FILTER3_çıkışı, FILTER2_çıkışı)   [sarılmış, -π..π]
-      → faz açma (unwrap): ardışık farkı ±2π (0x403bc4'te bulunan sabit, TAM 6.283185307179586)
-        ile kıyaslayıp gerektiğinde ekleyip/çıkararak sürekli hale getiriyor
-      → anlık frekans = d(açılmış_faz)/dt × örnekleme_hızı/2π
-      → FILTER4 (51-tap simetrik lowpass, merkez=0.125 — frekans kestirimini yumuşatıyor)
-      → [sembol karar mantığı — henüz izlenmedi]
+      → decimate by 4 (→11025Hz)
+      → FILTER2 (51-tap bandpass, ~900-2000Hz — KG-STV tone band)
+      → FILTER3 (51-tap Hilbert transformer — centre coefficient EXACTLY 0.0, fully antisymmetric
+                  → produces the quadrature/imaginary component)
+      → phase = atan2(FILTER3_output, FILTER2_output)   [wrapped, -π..π]
+      → phase unwrap: compares the consecutive difference with ±2π (constant found at 0x403bc4,
+        EXACTLY 6.283185307179586) and adds/subtracts as needed to make it continuous
+      → instantaneous frequency = d(unwrapped_phase)/dt × sample_rate/2π
+      → FILTER4 (51-tap symmetric lowpass, centre=0.125 — smooths the frequency estimate)
+      → [symbol decision logic — not traced yet]
     ```
-    Bu, **klasik bir Hilbert-dönüşümlü FM ayrıştırıcı** — kavramsal olarak bizim
-    `fsk_discriminator` yaklaşımımızla (karmaşık taşıyıcıya indirip açı-farkı almak) **birebir
-    aynı felsefe**, sadece IIR Butterworth yerine bu 4 gerçek FIR filtreyi kullanıyor.
+    This is a **classic Hilbert-transform FM discriminator** — conceptually **exactly the same
+    philosophy** as our `fsk_discriminator` approach (mixing down to a complex carrier and taking the
+    angle difference), just using these 4 real FIR filters instead of IIR Butterworth.
 
-    Bu tam zinciri (`research/decoder/kgstv_filters.py::apply_authentic_discriminator`)
-    Python'da uygulayıp `.10_scale` örneğinde senkron aramasını tekrarladım: **sonuç daha
-    kötü çıktı** (err=16/63, basit yaklaşımın err=0'ına kıyasla) — muhtemelen Hilbert işaret
-    kuralı (`atan2` argüman sırası) ya da faz yönü konvansiyonunda küçük bir uyumsuzluk var;
-    tam assembly ile bit-eşleşme için sabır isteyen ayrıca bir hata ayıklama gerekiyor.
-    **Bu noktada araştırma durduruldu** — mimari tamamen anlaşıldı ve belgelendi, ancak son
-    %100 bit-doğru replikasyon (ve olası known-plaintext problemi) hâlâ açık. Basit
-    karmaşık-mixing yaklaşımı (MSK için zaten kanıtlanmış) üretim için yeterli.
+    I implemented this full chain (`research/decoder/kgstv_filters.py::apply_authentic_discriminator`)
+    in Python and repeated the sync search on the `.10_scale` sample: **the result came out
+    worse** (err=16/63, compared with err=0 for the simple approach) — there is probably a small
+    mismatch in the Hilbert sign convention (`atan2` argument order) or the phase direction convention;
+    bit-matching the assembly exactly needs a separate, patient debugging session.
+    **Research was stopped at this point** — the architecture is fully understood and documented, but
+    the last 100% bit-exact replication (and the possible known-plaintext problem) is still open. The
+    simple complex-mixing approach (already proven for MSK) is sufficient for production.
 
--1. **Modülatör formülü kgstv.exe disassembly ile bulundu** (radare2, fonksiyon @0x405f94,
-    frekans sabitleri @0x4068e8 civarı). Gerçek x87 FPU kodu:
+-1. **The modulator formula was found via kgstv.exe disassembly** (radare2, function @0x405f94,
+    frequency constants around @0x4068e8). The real x87 FPU code:
     ```
-    ; fld qword [seçilen seviye değeri, -1.0..+1.0 aralığında, dallanmayla seçiliyor]
+    ; fld qword [selected level value, in the range -1.0..+1.0, chosen by branching]
     fmul dword [0x4068e8]   ; × 300.0
-    fadd dword [0x4068ec]   ; + 1500.0   -> frekans (Hz)
+    fadd dword [0x4068ec]   ; + 1500.0   -> frequency (Hz)
     fmul qword [0x4068f0]   ; × 2π (0x401921FB54442D18 = 6.283185307179586)
-    fmul qword [0x51974c]   ; × (muhtemelen 1/sample_rate)
-    fadd qword [0x4f64a0]   ; faz akümülatörüne ekle (çalışma zamanı durumu)
+    fmul qword [0x51974c]   ; × (probably 1/sample_rate)
+    fadd qword [0x4f64a0]   ; add to the phase accumulator (runtime state)
     fstp qword [0x4f64a0]   ; -> phase += 2π·f/fs
     ```
-    Bu **kesin olarak doğruluyor**: `frekans = seviye_değeri × 300 + 1500` (MSK: seviye=±1 →
-    1200/1800 Hz; 4L-FSK: seviye=±1,±⅓ → 1200/1400/1600/1800 Hz), ve modülasyon **gerçekten
-    sürekli-faz (continuous-phase, CPFSK)** — faz her örnekte biriktiriliyor, sembol sınırlarında
-    sıfırlanmıyor. Bu, MSK adının ("Minimum Shift Keying") beklediği tam davranış.
-    **Sonuç:** 4L-FSK'nin blok-bazlı ton-korelasyonuyla (Goertzel/DFT) güvenilir çözülememesinin
-    nedeni artık netleşti — bu yöntem ayrık/kesikli-faz FSK için uygundur, ama CPFSK için
-    sembol içi ton "sızıntısı" (200Hz aralık, ortogonal değil) yapısal bir sınırlama getiriyor.
-    MSK'de bu sorun olmuyor çünkü 600Hz aralığı simge periyodunda tam ortogonal. Doğru çözüm,
-    faz-türevi (frequency-discriminator) tabanlı, PLL/zamanlama-kurtarmalı bir demodülatör —
-    ki bunu zaten denedik ama ince ayarı (filtre bant genişliği, sembol-içi pencere) hâlâ
-    yetersiz. Alıcı tarafın (RX) tam eşik/filtre değerlerini bulmak için disassembly'e devam
-    edilebilir, ya da kendi PLL-tabanlı demodülatörümüzü bu doğrulanmış CPFSK modeliyle daha
-    dikkatli tasarlayabiliriz.
+    This **conclusively verifies**: `frequency = level_value × 300 + 1500` (MSK: level=±1 →
+    1200/1800 Hz; 4L-FSK: level=±1,±⅓ → 1200/1400/1600/1800 Hz), and the modulation is **really
+    continuous-phase (CPFSK)** — the phase is accumulated on every sample and not reset at symbol
+    boundaries. This is exactly the behaviour the name MSK ("Minimum Shift Keying") implies.
+    **Conclusion:** The reason why 4L-FSK cannot be reliably decoded with block-based tone correlation
+    (Goertzel/DFT) is now clear — that method suits discrete/discontinuous-phase FSK, but for CPFSK the
+    in-symbol tone "leakage" (200Hz spacing, not orthogonal) imposes a structural limitation.
+    MSK does not have this problem because the 600Hz spacing is exactly orthogonal over the symbol period.
+    The right solution is a phase-derivative (frequency-discriminator) based demodulator with PLL/timing
+    recovery — which we already tried, but its fine tuning (filter bandwidth, in-symbol window) is still
+    insufficient. The disassembly could be continued to find the receiver (RX) side's exact
+    threshold/filter values, or we could design our own PLL-based demodulator more carefully with this
+    verified CPFSK model.
 
-0. ~~Frekans sabitleri~~ — `kgstv.exe`'de offset ~24296-24320 civarında **300.0, 1500.0, 200.0,
-   1200.0** (float32) sabitleri art arda bulundu: merkez frekans (1500), MSK sapması (±300),
-   4L-FSK adım genişliği (200Hz) — varsayılan frekans modelimizle **tam örtüşüyor**. 4L-FSK
-   decode sorununun kaynağı yanlış nominal frekanslar değil; muhtemelen demod algoritmasının
-   kendisi (filtre/eşik) ya da whitening/bit-sıra detayı.
-1. **Bit sırası** — 54 bitlik header alanları ve 63/127 bitlik M-sequence dizileri MSB-first mi
-   gönderiliyor, LSB-first mi?
-2. **Viterbi K=7 polinomları** — "NASA standart" dendiğine göre büyük ihtimalle CCSDS/NASA
-   standart rate-1/2, polinom (171,133) oktal — ama teyit gerekiyor (flush/tail-biting var mı?).
-3. **CRC-16 CCITT parametreleri** — polinom 0x1021 standart ama init value / final XOR / giriş-
-   çıkış bit yönü (reflected mi) teyit edilmeli.
-4. **JPEG varyantının tam parametreleri** — quantization tablosu, Huffman tabloları özel mi
-   standart mı; her 16×16 blok bağımsız bir mini-JPEG mi yoksa paylaşılan tablo + sadece entropy
-   data mı gönderiyor (54-bit header'da ayrı bir quant-tablosu alanı yok, bu yüzden muhtemelen
-   sabit/standart bir tablo seti kullanılıyor ve `sc` alanı sadece ölçek/kalite seçiyor).
-5. **`sc` (4 bit) alanının tam anlamı** — hangi sayısal değer hangi JPEG kalite/ölçeğine denk
-   geliyor.
-6. **Kanal kodlamasının (whitening + convolutional) tam uygulanış sırası** — whitening
-   convolutional kodlamadan önce mi sonra mı uygulanıyor.
+0. ~~Frequency constants~~ — in `kgstv.exe`, around offset ~24296-24320, the constants **300.0, 1500.0, 200.0,
+   1200.0** (float32) were found one after another: centre frequency (1500), MSK deviation (±300),
+   4L-FSK step width (200Hz) — **matching exactly** our assumed frequency model. The source of the 4L-FSK
+   decode problem is not wrong nominal frequencies; probably the demod algorithm itself (filter/threshold)
+   or a whitening/bit-order detail.
+1. **Bit order** — are the 54-bit header fields and the 63/127-bit M-sequence strings sent MSB-first
+   or LSB-first?
+2. **Viterbi K=7 polynomials** — since it says "NASA standard", most likely the CCSDS/NASA standard
+   rate-1/2, polynomials (171,133) octal — but this needs confirming (is there flush/tail-biting?).
+3. **CRC-16 CCITT parameters** — polynomial 0x1021 is standard, but the init value / final XOR / input-
+   output bit direction (reflected or not) should be confirmed.
+4. **Exact parameters of the JPEG variant** — are the quantization table and Huffman tables custom or
+   standard; is each 16×16 block an independent mini-JPEG, or are shared tables + only entropy data
+   sent (there is no separate quant-table field in the 54-bit header, so probably a fixed/standard table
+   set is used and the `sc` field only selects the scale/quality).
+5. **Exact meaning of the `sc` (4-bit) field** — which numeric value corresponds to which JPEG
+   quality/scale.
+6. **Exact order in which the channel coding (whitening + convolutional) is applied** — is whitening
+   applied before or after convolutional coding?
 
-## Sonraki Adım Önerisi
+## Suggested Next Step
 
-Bu belge protokolün iskeletini tamamen veriyor. Kalan boşluklar (madde 1–6) için:
-- **Öncelik 1:** Gerçek bir off-air ses kaydı (kullanıcı sağlayacak) üzerinde bir prototip
-  demodülatörle bit-senkronizasyonu deneyip senkron/header alanlarını gözlemleyerek bit sırasını
-  ve CRC parametrelerini doğrulamak.
-- **Öncelik 2:** `kgstv.exe` içinde JPEG encode/decode ve Viterbi encode/decode fonksiyonlarını
-  Ghidra ile bulup sabit tabloları (quantization, Huffman, polinom) çıkarmak.
+This document gives the complete skeleton of the protocol. For the remaining gaps (items 1–6):
+- **Priority 1:** Try bit synchronization with a prototype demodulator on a real off-air audio recording
+  (to be supplied by the user) and verify the bit order and CRC parameters by observing the sync/header
+  fields.
+- **Priority 2:** Find the JPEG encode/decode and Viterbi encode/decode functions in `kgstv.exe` with
+  Ghidra and extract the constant tables (quantization, Huffman, polynomial).

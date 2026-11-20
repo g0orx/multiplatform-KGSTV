@@ -1,11 +1,11 @@
 """
-KG-STV frame walker — bir transmisyonun tamamını (callsign + görüntü blokları) dolaşıp
-her frame'in header'ını ve (varsa) veri chunk'ını decode eder, CRC ile doğrular.
+KG-STV frame walker — walks an entire transmission (callsign + image blocks) and
+decodes each frame's header and (if present) data chunk, verifying them with CRC.
 
-Kullanım: python3 frame_walker.py <wav_path> <ilk_anchor_tahmini>
-Önce tone_demod.ToneClock ile senkron kelimesini bulup ince ayar yapar, sonra dolaşır.
+Usage: python3 frame_walker.py <wav_path> <initial_anchor_estimate>
+First finds the sync word with tone_demod.ToneClock and fine-tunes it, then walks.
 
-Bulgular: bkz. docs/protocol_spec.md
+Findings: see docs/protocol_spec.md
 """
 import sys
 import numpy as np

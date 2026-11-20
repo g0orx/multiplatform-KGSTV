@@ -1,19 +1,19 @@
-//! KG-STV'nin 16×16 görüntü tile'ları için JPEG-uyumlu blok codec'i (encode + decode).
+//! JPEG-compatible block codec (encode + decode) for KG-STV's 16×16 image tiles.
 //!
-//! Gerçek off-air kayıtlar ve kontrollü test görüntüleriyle (düz renk + çizgili, OH2UDS)
-//! doğrulanan bulgular:
-//! - 6 blok sırası: Y0,Y1,Y2,Y3 (16×16 luma, sol-üst/sağ-üst/sol-alt/sağ-alt), Cr, Cb
-//! - **Kritik**: bu 6 bloğun DC değerleri standart JPEG'in aksine BİRBİRİNE ZİNCİRLENMEZ —
-//!   her biri kendi başına, predictor=0 ile kodlanır (bkz. docs/protocol_spec.md, "KRİTİK
-//!   DÜZELTME" bölümü). Bu codec o bulguyu baştan doğru uyguluyor.
-//! - Kuantizasyon: standart IJG kalite-ölçekleme formülü, ama `sc` header alanı (4 bit, 0-15)
-//!   ham "quality" (1-100) DEĞİL — orijinal göndericinin "Scale" açılır listesindeki 16 ondalık
-//!   değere (0.07…2.0) bir İNDEKS; ölçek bu değerin doğrudan çarpanı olarak hesaplanıyor
-//!   (bkz. `scale_qt` dokümantasyonu — kullanıcının gerçek programdan bildirdiği aktarım
-//!   süreleriyle doğrulandı).
-//! - 4:2:0-eşdeğeri chroma altörnekleme (KG-STV'nin "4:1:1" dediği), tek Cb+Cr 8×8 blok
-//!   16×16'lık tüm tile'ı kapsar.
-//! - Bitstream marker'sız, byte-hizasız — sadece ham entropy-coded veri + 16-bit CRC (bkz. frame.rs).
+//! Findings verified with real off-air recordings and controlled test images (solid colour + striped, OH2UDS):
+//!
+//! - Order of the 6 blocks: Y0,Y1,Y2,Y3 (16×16 luma, top-left/top-right/bottom-left/bottom-right), Cr, Cb
+//! - **Critical**: unlike standard JPEG, the DC values of these 6 blocks are NOT CHAINED TO EACH OTHER —
+//!   each one is coded on its own with predictor=0 (see docs/protocol_spec.md, the "CRITICAL
+//!   CORRECTION" section). This codec applies that finding correctly from the start.
+//! - Quantization: the standard IJG quality-scaling formula, but the `sc` header field (4 bits, 0-15)
+//!   is NOT a raw "quality" (1-100) — it is an INDEX into the 16 decimal values (0.07…2.0) of the
+//!   original sender's "Scale" drop-down list; the scale is computed as a direct multiplier of that value
+//!   (see the `scale_qt` documentation — verified against transfer times the user reported from the
+//!   real program).
+//! - 4:2:0-equivalent chroma subsampling (what KG-STV calls "4:1:1"); a single Cb+Cr 8×8 block
+//!   covers the whole 16×16 tile.
+//! - The bitstream has no markers and no byte alignment — just raw entropy-coded data + 16-bit CRC (see frame.rs).
 
 use crate::jpeg_tables::*;
 use std::collections::HashMap;
@@ -23,10 +23,10 @@ const TILE: usize = 16;
 const BLOCK: usize = 8;
 
 // ---------------------------------------------------------------------------------------
-// Huffman tabloları (bir kez inşa edilip önbelleklenir)
+// Huffman tables (built once and cached)
 // ---------------------------------------------------------------------------------------
 
-/// Kanonik JPEG kod ataması (Annex C): (uzunluk, kod) -> değer.
+/// Canonical JPEG code assignment (Annex C): (length, code) -> value.
 fn build_decode_table(counts: &[u8; 16], values: &[u8]) -> HashMap<(u8, u16), u8> {
     let mut map = HashMap::new();
     let mut code: u16 = 0;
@@ -43,7 +43,7 @@ fn build_decode_table(counts: &[u8; 16], values: &[u8]) -> HashMap<(u8, u16), u8
     map
 }
 
-/// Ters yön: değer -> (kod, uzunluk) — encode için.
+/// Reverse direction: value -> (code, length) — for encoding.
 fn build_encode_table(counts: &[u8; 16], values: &[u8]) -> HashMap<u8, (u16, u8)> {
     let mut map = HashMap::new();
     let mut code: u16 = 0;
@@ -80,7 +80,7 @@ cached_table!(ac_luma_enc, build_encode_table, AC_LUMA_COUNTS, AC_LUMA_VALUES, H
 cached_table!(ac_chroma_enc, build_encode_table, AC_CHROMA_COUNTS, AC_CHROMA_VALUES, HashMap<u8,(u16,u8)>);
 
 // ---------------------------------------------------------------------------------------
-// Bit okuma / yazma (kgstv-core genelinde kullanılan Vec<u8> 0/1 bit dizisi konvansiyonu)
+// Bit reading / writing (the Vec<u8> 0/1 bit-array convention used throughout kgstv-core)
 // ---------------------------------------------------------------------------------------
 
 struct BitReader<'a> {
@@ -140,11 +140,11 @@ fn decode_huffman_symbol(br: &mut BitReader, table: &HashMap<(u8, u16), u8>) -> 
 }
 
 fn encode_huffman_symbol(bw: &mut BitWriter, table: &HashMap<u8, (u16, u8)>, symbol: u8) {
-    let (code, len) = *table.get(&symbol).expect("huffman tablosunda olmayan sembol");
+    let (code, len) = *table.get(&symbol).expect("symbol not in huffman table");
     bw.write_bits(code as u32, len);
 }
 
-/// JPEG EXTEND (T.81 Annex F, F.12): S kategori bitinden imzalı DC/AC değerine.
+/// JPEG EXTEND (T.81 Annex F, F.12): from S category bits to a signed DC/AC value.
 fn extend(v: u32, s: u8) -> i32 {
     if s == 0 {
         return 0;
@@ -158,7 +158,7 @@ fn extend(v: u32, s: u8) -> i32 {
     }
 }
 
-/// EXTEND'in tersi: imzalı bir değeri (kategori, S-bit ham değer) çiftine çevirir.
+/// Inverse of EXTEND: converts a signed value into a (category, S-bit raw value) pair.
 fn category_of(value: i32) -> (u8, u32) {
     if value == 0 {
         return (0, 0);
@@ -174,10 +174,10 @@ fn category_of(value: i32) -> (u8, u32) {
 }
 
 // ---------------------------------------------------------------------------------------
-// DC/AC blok decode + encode (predictor HER ZAMAN 0 — bkz. modül dokümantasyonu)
+// DC/AC block decode + encode (predictor ALWAYS 0 — see module documentation)
 // ---------------------------------------------------------------------------------------
 
-/// Bir 8×8 bloğun 64 katsayısını (doğal sırada) döndürür. `dc_pred` HER ZAMAN 0 verilmeli.
+/// Returns the 64 coefficients of an 8×8 block (in natural order). `dc_pred` must ALWAYS be 0.
 fn decode_block(
     br: &mut BitReader,
     dc_table: &HashMap<(u8, u16), u8>,
@@ -218,7 +218,7 @@ fn decode_block(
     Some(coeffs)
 }
 
-/// Bir 8×8 bloğu (zigzag-sıralı 64 katsayı) encode eder.
+/// Encodes an 8×8 block (64 coefficients in zigzag order).
 fn encode_block(
     bw: &mut BitWriter,
     dc_table: &HashMap<u8, (u16, u8)>,
@@ -230,7 +230,7 @@ fn encode_block(
     if s > 0 {
         bw.write_bits(raw, s);
     }
-    // AC: son sıfır-olmayanın indeksini bul
+    // AC: find the index of the last non-zero coefficient
     let mut last_nz = 0usize;
     for i in (1..64).rev() {
         if zigzag_coeffs[i] != 0 {
@@ -262,7 +262,7 @@ fn encode_block(
 }
 
 // ---------------------------------------------------------------------------------------
-// IDCT / DCT (ayrılabilir, 8×8, f64)
+// IDCT / DCT (separable, 8×8, f64)
 // ---------------------------------------------------------------------------------------
 
 fn dct_basis() -> &'static [[f64; 8]; 8] {
@@ -305,7 +305,7 @@ fn idct8(f: &[[f64; 8]; 8]) -> [[f64; 8]; 8] {
     out
 }
 
-/// F = Tᵀ · spatial · T  (ileri DCT, encode için)
+/// F = Tᵀ · spatial · T  (forward DCT, for encoding)
 fn fdct8(spatial: &[[f64; 8]; 8]) -> [[f64; 8]; 8] {
     let t = dct_basis();
     let mut tmp = [[0.0f64; 8]; 8];
@@ -331,42 +331,42 @@ fn fdct8(spatial: &[[f64; 8]; 8]) -> [[f64; 8]; 8] {
     out
 }
 
-/// Orijinal Windows KGSTV göndericisinin "Scale" açılır listesindeki 16 değerin BİREBİR
-/// aynısı (kullanıcı tarafından bildirildi; bkz. `kgstv-gui::TX_SCALE_LABELS` — iki dizi
-/// senkron tutulmalı). Header'ın 4-bit `sc` alanına bu dizinin İNDEKSİ (0-15) yazılıyor;
-/// ondalık değerler kuantizasyon ölçeğini DOĞRUDAN çarpan olarak belirliyor (bkz. `scale_qt`).
+/// EXACTLY the same 16 values as the original Windows KGSTV sender's "Scale" drop-down list
+/// (reported by the user; see `kgstv-gui::TX_SCALE_LABELS` — the two arrays must be kept
+/// in sync). The INDEX (0-15) into this array is written to the header's 4-bit `sc` field;
+/// the decimal values set the quantization scale DIRECTLY as a multiplier (see `scale_qt`).
 const SC_SCALE_TABLE: [f64; 16] =
     [0.07, 0.08, 0.09, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.20, 1.40, 1.60, 1.80, 2.0];
 
-/// `sc=10` (Scale="1.0", orijinal göndericinin varsayılanı) için, gerçek bir off-air kayıttan
-/// piksel-hassasiyetinde doğrulanan IJG-standart kalite-ölçeği (bkz.
-/// `flat_dc_block_matches_real_capture`: `quality=10 → scale=5000/10=500`). Diğer tüm `sc`
-/// `sc` header alanına (0-15 İNDEKS — `SC_SCALE_TABLE`'a bakılır, ham 1-100 IJG "quality"
-/// DEĞİL) göre baz kuantizasyon tablosunu ölçekler.
+/// For `sc=10` (Scale="1.0", the original sender's default), the IJG-standard quality scale verified
+/// to pixel precision from a real off-air recording (see
+/// `flat_dc_block_matches_real_capture`: `quality=10 → scale=5000/10=500`). For all other `sc`:
+/// scales the base quantization table according to the `sc` header field (a 0-15 INDEX — looked up in
+/// `SC_SCALE_TABLE`, NOT a raw 1-100 IJG "quality").
 ///
-/// **Düzeltme #2 (2026-08-08, GERÇEK REFERANS GÖRÜNTÜLERLE doğrulandı):** Bir önceki
-/// düzeltme (`internal_scale = SC_SCALE_TABLE[sc] × 500`, IJG "quality=10" formülünden
-/// türetilmiş bir sabit çapa) YÖNÜ doğru veriyordu ama BÜYÜKLÜĞÜ hâlâ yanlıştı — kullanıcı
-/// "goruntu hala sc 2.0 disinda kotu" diye bildirdi (sadece en kaba ayar kabul edilebilir
-/// çıkıyordu, geri kalan HER değerde renkler/görüntü bozuktu). `research/sampleaudio/`
-/// içindeki GERÇEK off-air kayıtları (`KG-STV_.10_scale.wav` → sc=3 doğrulandı,
-/// `KG-STV_.50_scale.wav` → sc=7 doğrulandı, `KG-STV_MSK_Norm.wav` → sc=10) ve bunlara
-/// karşılık gelen, orijinal Windows ALICISINDAN alınmış piksel-hassasiyetinde referans
-/// görüntüler (`1scale.jpg`, `5scale.png`, `1.0_scale.png` — üçü de tam 320×240) kullanılarak
-/// çok sayıda (15+) düz/tek-renkli (AC≈0) karo üzerinde geriye doğru hesaplama yapıldı:
-/// gerçek `qval`, ESKİ formülün öngördüğünden (sc=10'da 80) tutarlı şekilde ~5× DAHA KÜÇÜK
-/// çıktı (sc=10'da ~16, sc=7'de ~8, sc=3'te ~2) — ve bu üç nokta TEK VE BASİT bir ilişkiye
-/// mükemmel uyuyor:
+/// **Correction #2 (2026-08-08, verified WITH REAL REFERENCE IMAGES):** The previous
+/// correction (`internal_scale = SC_SCALE_TABLE[sc] × 500`, a fixed anchor derived from the IJG
+/// "quality=10" formula) got the DIRECTION right but the MAGNITUDE was still wrong — the user
+/// reported "image still bad except at sc 2.0" (only the coarsest setting came out acceptable;
+/// at EVERY other value the colours/image were corrupted). Using the REAL off-air recordings in
+/// `research/sampleaudio/` (`KG-STV_.10_scale.wav` → sc=3 verified,
+/// `KG-STV_.50_scale.wav` → sc=7 verified, `KG-STV_MSK_Norm.wav` → sc=10) and the matching
+/// pixel-precise reference images taken from the original Windows RECEIVER
+/// (`1scale.jpg`, `5scale.png`, `1.0_scale.png` — all three exactly 320×240),
+/// a back-calculation was done on many (15+) flat/single-colour (AC≈0) tiles:
+/// the real `qval` came out consistently ~5× SMALLER than the OLD formula predicted (80 at sc=10)
+/// (~16 at sc=10, ~8 at sc=7, ~2 at sc=3) — and these three points fit a SINGLE, SIMPLE relationship
+/// perfectly:
 ///
-/// > **`qval = round(taban_tablo_değeri × SC_SCALE_TABLE[sc])`** — yani "Scale" göstergedeki
-/// > ondalık değerin (0.07…2.0) kendisi, taban (quality=50) kuantizasyon tablosunun DOĞRUDAN
-/// > çarpanı. Ekstra bir IJG "quality" ara formülüne (`5000/quality` vb.) HİÇ gerek yok —
-/// > isim zaten "Scale" (ölçek/çarpan), soyut bir "quality" değil.
+/// > **`qval = round(base_table_value × SC_SCALE_TABLE[sc])`** — i.e. the decimal value shown in
+/// > "Scale" (0.07…2.0) is itself the DIRECT multiplier of the base (quality=50) quantization
+/// > table. There is NO need for an extra intermediate IJG "quality" formula (`5000/quality` etc.) —
+/// > the name is already "Scale" (scale/multiplier), not an abstract "quality".
 ///
-/// (Önceki `sc=10 → qt[0,0]=80` iddiası — `docs/protocol_spec.md`, "ÇÖZÜLDÜ" bölümü — tek bir
-/// düz bloktan geriye doğru hesaplanmıştı ve o zamanki ölçümün kaynağı bağımsız olarak
-/// doğrulanamadı; buradaki 15+ noktalı, gerçek referans-görüntü çapraz kontrolü çok daha
-/// güçlü bir kanıt. `decodes_real_captured_solid_red_tile` testi bu düzeltmeyle güncellendi.)
+/// (The earlier `sc=10 → qt[0,0]=80` claim — `docs/protocol_spec.md`, "RESOLVED" section — had been
+/// back-calculated from a single flat block and the source of that measurement could not be
+/// independently verified; the 15+ point cross-check against real reference images here is much
+/// stronger evidence. The `decodes_real_captured_solid_red_tile` test was updated with this correction.)
 fn scale_qt(base: &[u16; 64], sc: u8) -> [f64; 64] {
     let scale = SC_SCALE_TABLE[(sc as usize).min(SC_SCALE_TABLE.len() - 1)];
     let mut out = [0.0f64; 64];
@@ -377,12 +377,12 @@ fn scale_qt(base: &[u16; 64], sc: u8) -> [f64; 64] {
 }
 
 // ---------------------------------------------------------------------------------------
-// Genel API: 16×16 tile decode / encode
+// Public API: 16×16 tile decode / encode
 // ---------------------------------------------------------------------------------------
 
-/// Bir 16×16 KG-STV görüntü tile'ının decode edilmiş içeriği.
-/// `y`: 16×16 luma (0-255 aralığında, IDCT sonrası kırpılmış).
-/// `cb`, `cr`: 8×8 chroma (16×16 tile'ın tamamını kapsar, 4:2:0-eşdeğeri).
+/// Decoded contents of a 16×16 KG-STV image tile.
+/// `y`: 16×16 luma (in the 0-255 range, clipped after IDCT).
+/// `cb`, `cr`: 8×8 chroma (covers the whole 16×16 tile, 4:2:0-equivalent).
 #[derive(Debug, Clone)]
 pub struct Tile {
     pub y: [[f64; TILE]; TILE],
@@ -401,10 +401,10 @@ fn quant_zigzag(spatial: &[[f64; 8]; 8], qt_natural: &[f64; 64]) -> [i32; 64] {
     zz
 }
 
-/// Tanı yardımcısı: HER 6 bloğun (Y0..Y3,Cr,Cb) DC katsayısını (dequant ÖNCESİ, ham) döner —
-/// gerçek kayıtlardaki kuantizasyon ölçeği sorunlarını araştırırken (bkz. `scale_qt`
-/// "Düzeltme #2" dokümantasyonu) referans görüntülerle çapraz doğrulama için kullanıldı;
-/// benzer bir kalibrasyon sorunu tekrar ortaya çıkarsa diye tutuluyor.
+/// Diagnostic helper: returns the DC coefficient (raw, BEFORE dequantization) of ALL 6 blocks (Y0..Y3,Cr,Cb) —
+/// used for cross-checking against reference images while investigating quantization-scale problems in
+/// real recordings (see the "Correction #2" documentation of `scale_qt`); kept in case a similar
+/// calibration problem comes up again.
 pub fn decode_tile_raw_dc(bits: &[u8]) -> Option<[i32; 6]> {
     let mut br = BitReader::new(bits);
     let mut out = [0i32; 6];
@@ -419,8 +419,8 @@ pub fn decode_tile_raw_dc(bits: &[u8]) -> Option<[i32; 6]> {
     Some(out)
 }
 
-/// `bits`: MSB-first 0/1 dizisi, tek bir 16×16 KG-STV görüntü tile'ının ham entropy-coded
-/// verisi (CRC hariç — o frame.rs seviyesinde ele alınır). `quality`: header'ın `sc` alanı.
+/// `bits`: MSB-first 0/1 sequence, the raw entropy-coded data of a single 16×16 KG-STV image tile
+/// (excluding the CRC — that is handled at the frame.rs level). `quality`: the header's `sc` field.
 pub fn decode_tile(bits: &[u8], quality: u8) -> Option<Tile> {
     let mut br = BitReader::new(bits);
     let qt_y = scale_qt(&STD_LUMA_QT, quality);
@@ -466,8 +466,8 @@ fn dequant_idct_qt(coeffs_zigzag: &[i32; 64], qt: &[f64; 64]) -> [[f64; 8]; 8] {
     idct8(&natural)
 }
 
-/// Bir `Tile`'ı KG-STV bitstream'ine encode eder (TX tarafı). `decode_tile` ile round-trip
-/// tutarlı olacak şekilde: 6 blok bağımsız (predictor=0), sıra Y0,Y1,Y2,Y3,Cr,Cb.
+/// Encodes a `Tile` into a KG-STV bitstream (TX side). Round-trip consistent with
+/// `decode_tile`: 6 independent blocks (predictor=0), order Y0,Y1,Y2,Y3,Cr,Cb.
 pub fn encode_tile(tile: &Tile, quality: u8) -> Vec<u8> {
     let qt_y = scale_qt(&STD_LUMA_QT, quality);
     let qt_c = scale_qt(&STD_CHROMA_QT, quality);
@@ -500,7 +500,7 @@ pub fn encode_tile(tile: &Tile, quality: u8) -> Vec<u8> {
     bw.into_bits()
 }
 
-/// YCbCr (Y: 16×16, Cb/Cr: 8×8, 4:2:0-eşdeğeri) -> 16×16 RGB (u8, satır-major, [r,g,b]).
+/// YCbCr (Y: 16×16, Cb/Cr: 8×8, 4:2:0-equivalent) -> 16×16 RGB (u8, row-major, [r,g,b]).
 pub fn tile_to_rgb(tile: &Tile) -> [[[u8; 3]; TILE]; TILE] {
     let mut out = [[[0u8; 3]; TILE]; TILE];
     for r in 0..TILE {
@@ -521,7 +521,7 @@ pub fn tile_to_rgb(tile: &Tile) -> [[[u8; 3]; TILE]; TILE] {
     out
 }
 
-/// 16×16 RGB -> YCbCr `Tile` (encode öncesi). Chroma 8×8'e ortalama ile altörneklenir.
+/// 16×16 RGB -> YCbCr `Tile` (before encoding). Chroma is subsampled to 8×8 by averaging.
 pub fn rgb_to_tile(rgb: &[[[u8; 3]; TILE]; TILE]) -> Tile {
     let mut y = [[0.0f64; TILE]; TILE];
     let mut cb_full = [[0.0f64; TILE]; TILE];
@@ -557,14 +557,14 @@ pub fn rgb_to_tile(rgb: &[[[u8; 3]; TILE]; TILE]) -> Tile {
 mod tests {
     use super::*;
 
-    /// sc=10 ("Scale"=1.0) için taban tablo DOĞRUDAN kullanılır (`qt[0,0]=16×1.0=16`) —
-    /// `research/sampleaudio/1.0_scale.png` (orijinal Windows ALICISINDAN alınmış, 320×240,
-    /// piksel-hassasiyetinde referans) ile 15+ düz karo üzerinde çapraz doğrulandı (bkz.
-    /// `scale_qt` dokümantasyonu, "Düzeltme #2"). DC=-3 -> piksel=122.0.
+    /// For sc=10 ("Scale"=1.0) the base table is used DIRECTLY (`qt[0,0]=16×1.0=16`) —
+    /// cross-checked on 15+ flat tiles against `research/sampleaudio/1.0_scale.png` (taken from the
+    /// original Windows RECEIVER, 320×240, pixel-precise reference) (see the `scale_qt`
+    /// documentation, "Correction #2"). DC=-3 -> pixel=122.0.
     #[test]
     fn flat_dc_block_matches_real_capture() {
         let qt = scale_qt(&STD_LUMA_QT, 10);
-        assert_eq!(qt[0], 16.0); // gerçek referans görüntüyle doğrulanan qt[0,0]
+        assert_eq!(qt[0], 16.0); // qt[0,0] verified against the real reference image
         let mut coeffs = [0i32; 64];
         coeffs[0] = -3;
         let spatial = dequant_idct_qt(&coeffs, &qt);
@@ -572,17 +572,17 @@ mod tests {
         assert!((pixel - 122.0).abs() < 1e-9, "pixel={pixel}");
     }
 
-    /// Kritik düzeltme: aynı tile içindeki 4 Y bloğu, hepsi AYNI ham DC diff'e sahip olsa
-    /// bile (predictor ZİNCİRLENMEDİĞİ için), decode sonrası hepsi AYNI parlaklığı vermeli —
-    /// kontrollü düz-renk test görüntüleriyle (OH2UDS) doğrulandı.
+    /// Critical correction: the 4 Y blocks within the same tile, if they all have the SAME raw DC diff
+    /// (since the predictor is NOT CHAINED), must all give the SAME brightness after decoding —
+    /// verified with controlled solid-colour test images (OH2UDS).
     #[test]
     fn dc_does_not_chain_across_blocks_in_tile() {
         let qt = scale_qt(&STD_LUMA_QT, 10);
         let mut coeffs = [0i32; 64];
-        coeffs[0] = -58; // gerçek "duz-kirmizi" testinde her 4 Y bloğunun bağımsız DC'si
+        coeffs[0] = -58; // independent DC of each of the 4 Y blocks in the real "duz-kirmizi" (solid red) test
         let spatial = dequant_idct_qt(&coeffs, &qt);
         let pixel = (spatial[0][0] + 128.0).clamp(0.0, 255.0);
-        // Aynı coeffs her blokta kullanılırsa (chain yok), 4 blok da AYNI pikseli vermeli.
+        // If the same coeffs are used in every block (no chain), all 4 blocks must give the SAME pixel.
         for _ in 0..4 {
             let s2 = dequant_idct_qt(&coeffs, &qt);
             let p2 = (s2[0][0] + 128.0).clamp(0.0, 255.0);
@@ -590,23 +590,23 @@ mod tests {
         }
     }
 
-    /// UÇTAN UCA GERÇEK VERİ TESTİ: `OH2UDS-duz-kirmizi-mode-msk-code-normal-scale-1.wav`
-    /// off-air kaydından, tam demodülasyon+header+CRC zincirinden geçmiş, CRC-doğrulanmış
-    /// gerçek 78-bit tile(0,0) verisi (sc=10, gerçek kayıttan doğrulandı). Düz kırmızı bir
-    /// görüntünün karosu — bu test hem Huffman decode'un hem de "predictor=0, chain yok"
-    /// düzeltmesinin GERÇEK sinyal üzerinde doğru çalıştığını kanıtlıyor (bkz.
-    /// docs/protocol_spec.md, "KRİTİK DÜZELTME"). Beklenen değerler `scale_qt`'nin
-    /// "Düzeltme #2" formülüne göre güncellendi (bkz. o dokümantasyon) — ham bitler AYNI,
-    /// sadece kuantizasyon ölçeği düzeltildi.
+    /// END-TO-END REAL DATA TEST: real, CRC-verified 78-bit tile(0,0) data from the off-air recording
+    /// `OH2UDS-duz-kirmizi-mode-msk-code-normal-scale-1.wav`, passed through the full
+    /// demodulation+header+CRC chain (sc=10, verified from the real recording). A tile of a solid red
+    /// image — this test proves that both the Huffman decode and the "predictor=0, no chain"
+    /// correction work correctly on a REAL signal (see
+    /// docs/protocol_spec.md, "CRITICAL CORRECTION"). Expected values were updated according to the
+    /// "Correction #2" formula of `scale_qt` (see that documentation) — the raw bits are the SAME,
+    /// only the quantization scale was corrected.
     #[test]
     fn decodes_real_captured_solid_red_tile() {
         let bits_str = "111000010110101110000101101011100001011010111000010110101111101100010011001000";
         let bits: Vec<u8> = bits_str.bytes().map(|b| b - b'0').collect();
         assert_eq!(bits.len(), 78);
-        let tile = decode_tile(&bits, 10).expect("gerçek kayıttan decode başarısız olmamalı");
-        // 4 Y bloğu da (chain olmadığı için) aynı DC=-58 taşıyor -> hepsi aynı (koyu kırmızı
-        // parlaklığına karşılık gelen) piksele kırpılır — artık TAM SIFIRA değil (eski, çok
-        // kaba ölçekli formülün yapay sonucuydu).
+        let tile = decode_tile(&bits, 10).expect("decoding the real recording must not fail");
+        // All 4 Y blocks carry the same DC=-58 (since there is no chain) -> all clip to the same pixel
+        // (corresponding to dark red brightness) — no longer EXACTLY ZERO (that was an artefact of the
+        // old, very coarsely scaled formula).
         for row in tile.y.iter() {
             for &v in row.iter() {
                 assert!((v - 12.0).abs() < 1e-9, "y={v}");
@@ -615,21 +615,21 @@ mod tests {
         assert!((tile.cb[0][0] - 117.375).abs() < 1e-9, "cb={}", tile.cb[0][0]);
         assert!((tile.cr[0][0] - 232.125).abs() < 1e-9, "cr={}", tile.cr[0][0]);
         let rgb = tile_to_rgb(&tile);
-        assert_eq!(rgb[0][0], [157, 0, 0]); // koyu kırmızı — R≫G,B ilişkisi korunuyor
+        assert_eq!(rgb[0][0], [157, 0, 0]); // dark red — the R≫G,B relationship is preserved
     }
 
     #[test]
     fn encode_decode_roundtrip_solid_color() {
-        // Düz kırmızı (255,0,0) 16x16 tile — gerçek OH2UDS testiyle aynı ruhta.
-        // sc=10 ("Scale"=1.0): gerçek göndericinin varsayılanı, `sc` artık 0-15 İNDEKS
-        // olduğundan (bkz. `scale_qt`) eskiden kullanılan 50 geçersiz bir değerdi.
+        // Solid red (255,0,0) 16x16 tile — in the same spirit as the real OH2UDS test.
+        // sc=10 ("Scale"=1.0): the real sender's default; since `sc` is now a 0-15 INDEX
+        // (see `scale_qt`), the previously used 50 was an invalid value.
         let rgb = [[[255u8, 0, 0]; TILE]; TILE];
         let tile_in = rgb_to_tile(&rgb);
         let bits = encode_tile(&tile_in, 10);
-        let tile_out = decode_tile(&bits, 10).expect("decode başarısız");
+        let tile_out = decode_tile(&bits, 10).expect("decode failed");
         let rgb_out = tile_to_rgb(&tile_out);
-        // Merkezi bir piksel makul ölçüde kırmızıya yakın olmalı (JPEG kayıplı olduğu için
-        // birebir eşleşme beklenmez, ama kanal ilişkisi doğru olmalı: R >> G,B).
+        // A central pixel should be reasonably close to red (since JPEG is lossy an exact
+        // match is not expected, but the channel relationship must be right: R >> G,B).
         let [r, g, b] = rgb_out[8][8];
         assert!(r > 150, "r={r}");
         assert!(g < 80, "g={g}");
@@ -640,13 +640,13 @@ mod tests {
     fn encode_decode_roundtrip_solid_white() {
         let rgb = [[[255u8, 255, 255]; TILE]; TILE];
         let tile_in = rgb_to_tile(&rgb);
-        let bits = encode_tile(&tile_in, 10); // sc=10 ("Scale"=1.0, varsayılan) — bkz. yukarıdaki not
-        let tile_out = decode_tile(&bits, 10).expect("decode başarısız");
+        let bits = encode_tile(&tile_in, 10); // sc=10 ("Scale"=1.0, default) — see the note above
+        let tile_out = decode_tile(&bits, 10).expect("decode failed");
         let rgb_out = tile_to_rgb(&tile_out);
         for row in rgb_out.iter() {
             for px in row.iter() {
                 for &ch in px.iter() {
-                    assert!(ch > 240, "kanal={ch}, beyaza yakın olmalıydı");
+                    assert!(ch > 240, "channel={ch}, should have been close to white");
                 }
             }
         }

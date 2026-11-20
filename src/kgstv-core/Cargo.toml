@@ -2,7 +2,7 @@
 name = "kgstv-core"
 version = "0.1.0"
 edition = "2021"
-description = "KG-STV protokolünün platform-bağımsız çekirdeği: framing, kanal kodlama, whitening, CRC, header."
+description = "Platform-independent core of the KG-STV protocol: framing, channel coding, whitening, CRC, header."
 license = "MIT OR Apache-2.0"
 
 [dependencies]

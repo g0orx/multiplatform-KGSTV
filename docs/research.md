@@ -1,74 +1,74 @@
-# KG-STV — Araştırma Notları
+# KG-STV — Research Notes
 
-## Proje Hedefi
-JJ0OBZ tarafından yazılan, sadece Windows'ta çalışan **KG-STV** programının, orijinal protokolle
-**havada uyumlu** çalışan; Windows, Linux, macOS ve (mümkünse) iOS/Android üzerinde çalışan bir
-yeniden yazımını (rewrite) yapmak. Yani hedef sadece "benzer bir program" değil, gerçek KG-STV
-istasyonlarıyla haberleşebilen bit-uyumlu bir implementasyon.
+## Project Goal
+To produce a rewrite of the Windows-only **KG-STV** program written by JJ0OBZ that is
+**on-air compatible** with the original protocol and runs on Windows, Linux, macOS and (if
+possible) iOS/Android. In other words, the goal is not just "a similar program" but a
+bit-compatible implementation that can communicate with real KG-STV stations.
 
-## KG-STV Nedir
-KG-STV, dijital bir SSTV (Slow-Scan Television) modudur. Ses kartı üzerinden (soundcard-based)
-telsiz ile görüntü ve kısa metin mesajları göndermeyi/almayı sağlar. Analog SSTV'nin aksine
-görüntüyü JPEG olarak sıkıştırıp parçalar halinde dijital modülasyonla gönderir.
+## What Is KG-STV
+KG-STV is a digital SSTV (Slow-Scan Television) mode. It allows sending/receiving images and
+short text messages by radio via a sound card (soundcard-based). Unlike analogue SSTV, it
+compresses the image as JPEG and sends it in pieces using digital modulation.
 
-- **Geliştirici:** JJ0OBZ (Japonya, amatör radyo operatörü, "K.G.")
-- **Görüntü boyutu:** 320×240 (klasik analog SSTV modlarıyla aynı)
-- **Blok yapısı:** Görüntü 16×16 piksellik bloklara bölünüp her biri ayrı ayrı JPEG sıkıştırılıp
-  gönderiliyor. Bu sayede iletim kesintiye uğrasa bile alınan bloklar görüntüde "delikli" ama
-  görünür bir sonuç oluşturuyor.
-- **Hata düzeltme / tekrar isteme:** Alıcı, hatalı/kayıp blokları **BSR (Bad Segment Report)**
-  adlı bir geri bildirim mesajıyla vericiye bildiriyor; verici sadece o blokları yeniden gönderiyor.
-- **Metin mesajlaşma:** Görüntülere ek olarak kısa metin mesajları da desteklemektedir.
+- **Developer:** JJ0OBZ (Japan, amateur radio operator, "K.G.")
+- **Image size:** 320×240 (the same as classic analogue SSTV modes)
+- **Block structure:** The image is split into 16×16-pixel blocks, each of which is JPEG-compressed
+  and sent separately. This way, even if the transmission is interrupted, the blocks received
+  produce a "holey" but visible result in the image.
+- **Error correction / retransmission requests:** The receiver reports corrupted/lost blocks to
+  the transmitter with a feedback message called a **BSR (Bad Segment Report)**; the transmitter
+  resends only those blocks.
+- **Text messaging:** In addition to images, short text messages are also supported.
 
-## Modülasyon Detayları
-İki modülasyon modu var:
+## Modulation Details
+There are two modulation modes:
 
-| Mod | Açıklama | Hız | Not |
+| Mode | Description | Speed | Note |
 |---|---|---|---|
-| **MSK** | Minimum-Shift Keying | 1200 Bd | Daha yavaş, daha stabil (fading'e dayanıklı) |
-| **4LFSK** | 4-Level Frequency-Shift Keying | 1200 Bd (2 bit/sembol → efektif 2x veri) | Daha hızlı, propagasyon bozulmalarına daha hassas |
+| **MSK** | Minimum-Shift Keying | 1200 Bd | Slower, more stable (resistant to fading) |
+| **4LFSK** | 4-Level Frequency-Shift Keying | 1200 Bd (2 bits/symbol → effectively 2x data) | Faster, more sensitive to propagation impairments |
 
-**MSK frekansları:** 0 → 1200 Hz, 1 → 1800 Hz
-**4LFSK frekansları:** 00→1200 Hz, 01→1400 Hz, 10→1600 Hz, 11→1800 Hz
+**MSK frequencies:** 0 → 1200 Hz, 1 → 1800 Hz
+**4LFSK frequencies:** 00→1200 Hz, 01→1400 Hz, 10→1600 Hz, 11→1800 Hz
 
-- **Bant genişliği:** ~500–2500 Hz (sinyal koşullarına göre değişken)
-- **Hata düzeltme kodu:** Viterbi convolutional coding, NASA standart **K=7**, isteğe bağlı
-  (kullanıcı encoding'siz de gönderebiliyor)
-- **Operasyon:** USB (Upper Sideband), amatör SSTV bantlarında
+- **Bandwidth:** ~500–2500 Hz (varies with signal conditions)
+- **Error-correcting code:** Viterbi convolutional coding, NASA standard **K=7**, optional
+  (the user can also send without encoding)
+- **Operation:** USB (Upper Sideband), on the amateur SSTV bands
 
-## Bilinen Frekanslar / Bantlar
-- 3733 kHz, 7173 kHz, 14233 kHz (HF SSTV bantları)
-- 10.489625 GHz üzerinden QO-100 (geostationary amatör transponder)
+## Known Frequencies / Bands
+- 3733 kHz, 7173 kHz, 14233 kHz (HF SSTV bands)
+- QO-100 via 10.489625 GHz (geostationary amateur transponder)
 
-## Yazılımın Durumu
-- **Kapalı kaynak (closed-source)**, sadece Windows'ta çalışıyor.
-- Bilinen tek alım/gönderim programı JJ0OBZ'nin kendi yazılımı; başka bir implementasyon
-  (açık kaynak dahil) şu ana kadar tamamlanmamış görünüyor.
-- `sstv@groups.io` üzerinde bir GNU Radio decoder block'u yazma fikri tartışılmış ama sonuç
-  bulunamadı.
+## State of the Software
+- **Closed-source**, runs only on Windows.
+- The only known receive/transmit program is JJ0OBZ's own software; no other implementation
+  (including open source) appears to have been completed so far.
+- The idea of writing a GNU Radio decoder block was discussed on `sstv@groups.io`, but no result
+  was found.
 
-## Eksik / Bilinmeyen Teknik Detaylar (ters mühendislik gerektiriyor)
-Web'de bulunan hiçbir kaynak şu an için **tam protokol dokümantasyonu** içermiyor. Bit-uyumlu
-bir implementasyon için netleştirilmesi gereken noktalar:
+## Missing / Unknown Technical Details (require reverse engineering)
+No source found on the web currently contains **full protocol documentation**. Points that need
+to be clarified for a bit-compatible implementation:
 
-1. **Senkronizasyon / preamble dizisi** — alıcının bit senkronizasyonu ve blok sınırlarını nasıl
-   bulduğu.
-2. **Paket / header formatı** — her 16×16 blok gönderilirken hangi başlık bilgisi (blok
-   koordinatı, checksum/CRC, mod bilgisi vb.) ekleniyor.
-3. **16×16 blok içindeki JPEG varyantının tam parametreleri** — standart baseline JPEG mi,
-   yoksa özelleştirilmiş bir DCT/quantization tablosu mu kullanılıyor.
-4. **BSR (Bad Segment Report) paket formatı** — geri bildirim mesajının bit düzeyinde yapısı.
-5. **Metin mesajlaşma çerçevesi (framing)** — metin paketlerinin resim paketlerinden nasıl
-   ayırt edildiği.
-6. **Viterbi K=7 tam parametreleri** — generator polinomları, puncturing (varsa).
+1. **Synchronization / preamble sequence** — how the receiver finds bit synchronization and block
+   boundaries.
+2. **Packet / header format** — what header information (block coordinates, checksum/CRC, mode
+   information etc.) is added when each 16×16 block is sent.
+3. **Exact parameters of the JPEG variant inside a 16×16 block** — is it standard baseline JPEG,
+   or is a customized DCT/quantization table used?
+4. **BSR (Bad Segment Report) packet format** — the bit-level structure of the feedback message.
+5. **Text messaging framing** — how text packets are distinguished from image packets.
+6. **Exact Viterbi K=7 parameters** — generator polynomials, puncturing (if any).
 
-Bu detaylar ancak şu yollarla çıkarılabilir:
-- **Statik analiz:** KGSTV.exe binary'sinin disassemble edilmesi (Ghidra/IDA) — sabitler,
-  tablo verileri, encode/decode fonksiyonları.
-- **Dinamik analiz:** Gerçek KG-STV yayınlarının off-air ses kayıtları (WAV) üzerinde
-  spektrogram/demodülasyon analizi yapılarak bit akışının doğrulanması.
+These details can only be extracted in the following ways:
+- **Static analysis:** disassembling the KGSTV.exe binary (Ghidra/IDA) — constants,
+  table data, encode/decode functions.
+- **Dynamic analysis:** verifying the bit stream by performing spectrogram/demodulation analysis
+  on off-air audio recordings (WAV) of real KG-STV transmissions.
 
-## Kaynaklar
+## Sources
 - [KG-STV - Signal Identification Wiki](https://www.sigidwiki.com/wiki/KG-STV)
 - [M5AML - KG-STV, a digital SSTV system by JJ0OBZ](http://www.wells10000.plus.com/m5aml/kg-stv.htm)
 - [What is KG-STV in Amateur Radio? - Johnson's Techworld](https://johnsonfrancis.org/techworld/what-is-kg-stv-in-amateur-radio/)
@@ -76,8 +76,8 @@ Bu detaylar ancak şu yollarla çıkarılabilir:
 - [KG-STV MSK 1200Bd/600 via QO-100 (diario SWL I-56578)](http://i56578-swl.blogspot.com/2019/07/kg-stv-msk-1200bd600-via-qatar-oscar-100.html)
 - [sstv@groups.io — open-source implementation of KG-STV?](https://groups.io/g/sstv/topic/open_source_implementation_og/80462530)
 
-## Sonraki Adımlar
-Bkz. proje görev listesi (task tracker) — sırada:
-1. Ters mühendislik kaynaklarının toplanması (binary + kayıtlar)
-2. Cross-platform teknoloji yığınına karar verme
-3. Protokolün fiilen çıkarılması
+## Next Steps
+See the project task list (task tracker) — next up:
+1. Gather the reverse-engineering sources (binary + recordings)
+2. Decide on the cross-platform technology stack
+3. Actually extract the protocol

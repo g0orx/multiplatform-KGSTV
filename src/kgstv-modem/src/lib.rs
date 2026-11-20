@@ -1,13 +1,13 @@
-//! kgstv-modem: KG-STV için ses I/O + MSK modülatör/demodülatör.
+//! kgstv-modem: audio I/O + MSK modulator/demodulator for KG-STV.
 //!
-//! `kgstv-core`'un doğrulanmış bit-seviyesi protokol mantığı (framing, konvolüsyonel kod,
-//! whitening, CRC, JPEG tile codec) üzerine ses katmanını ekler: WAV okuma/yazma, bant-geçiren
-//! ön-filtre, gerçek sürekli-faz MSK sentezi/demodülasyonu, senkron kelimesi arama ve bunların
-//! hepsini bir araya getiren üst seviye oturum (session) API'si.
+//! Adds the audio layer on top of `kgstv-core`'s verified bit-level protocol logic (framing,
+//! convolutional code, whitening, CRC, JPEG tile codec): WAV reading/writing, a band-pass
+//! pre-filter, true continuous-phase MSK synthesis/demodulation, sync-word search, and a
+//! top-level session API that ties them all together.
 //!
-//! 4L-FSK ses katmanı henüz burada YOK — ton-korelasyonu demodülasyonu ~%80-83 sembol
-//! doğruluğunda kalıyor (bkz. docs/protocol_spec.md), pratik decode için yetersiz; uygun bir
-//! MLSD/Viterbi tabanlı CPFSK demodülatörü ayrı bir iş olarak planlanıyor.
+//! The 4L-FSK audio layer is NOT here yet — tone-correlation demodulation stays at ~80-83% symbol
+//! accuracy (see docs/protocol_spec.md), which is insufficient for practical decoding; a proper
+//! MLSD/Viterbi-based CPFSK demodulator is planned as separate work.
 
 pub mod wav;
 pub mod filter;

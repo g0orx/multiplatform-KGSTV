@@ -1,14 +1,14 @@
-//! Rate-1/2, K=7 konvolüsyonel kod (NASA standart, üreteç polinomları 171/133 oktal).
-//! Çıkış sırası: her girdi biti için (G133_biti, G171_biti) — gerçek off-air kayıt üzerinde
-//! metric=0 ile doğrulandı (bkz. docs/protocol_spec.md).
+//! Rate-1/2, K=7 convolutional code (NASA standard, generator polynomials 171/133 octal).
+//! Output order: for each input bit (G133_bit, G171_bit) — verified against a real off-air recording
+//! with metric=0 (see docs/protocol_spec.md).
 //!
-//! Not: KG-STV header'ı HER ZAMAN bu kodla kodlanır (54 ham bit -> 108 kodlanmış bit,
-//! tail/flush biti YOK). Veri chunk'ı, header'ın `c` alanı CONV ise aynı kodla kodlanır.
+//! Note: the KG-STV header is ALWAYS encoded with this code (54 raw bits -> 108 encoded bits,
+//! NO tail/flush bits). The data chunk is encoded with the same code if the header's `c` field is CONV.
 
 const K: usize = 7;
 const NSTATES: usize = 1 << (K - 1); // 64
-const G1: u8 = 0b1111001; // 171 oktal
-const G2: u8 = 0b1011011; // 133 oktal
+const G1: u8 = 0b1111001; // 171 octal
+const G2: u8 = 0b1011011; // 133 octal
 
 fn taps(poly: u8) -> [u8; K] {
     let mut t = [0u8; K];
@@ -18,12 +18,12 @@ fn taps(poly: u8) -> [u8; K] {
     t
 }
 
-/// `bits` (ham girdi bitleri) -> kodlanmış çıktı (2*bits.len() uzunluğunda).
-/// Çıkış sırası: her girdi biti için [G2_output, G1_output] (doğrulanmış konvansiyon).
+/// `bits` (raw input bits) -> encoded output (of length 2*bits.len()).
+/// Output order: for each input bit [G2_output, G1_output] (verified convention).
 pub fn encode(bits: &[u8]) -> Vec<u8> {
     let g1 = taps(G1);
     let g2 = taps(G2);
-    let mut state: u8 = 0; // en yeni önceki bit LSB'de
+    let mut state: u8 = 0; // most recent previous bit in the LSB
     let mut out = Vec::with_capacity(bits.len() * 2);
     for &bit in bits {
         let mut reg = [0u8; K];
@@ -40,9 +40,9 @@ pub fn encode(bits: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Viterbi (hard-decision) decode. `rx`: kodlanmış bit dizisi (2*nbits uzunluğunda,
-/// [o2,o1] çift sıralı). `start_state`: bilinen başlangıç encoder durumu (genelde 0).
-/// Dönüş: (kod çözülmüş ham bitler, toplam metrik/hata, bitiş durumu).
+/// Viterbi (hard-decision) decode. `rx`: encoded bit sequence (of length 2*nbits,
+/// ordered as [o2,o1] pairs). `start_state`: known initial encoder state (usually 0).
+/// Returns: (decoded raw bits, total metric/errors, end state).
 pub fn viterbi_decode(rx: &[u8], nbits: usize, start_state: usize) -> (Vec<u8>, u32, usize) {
     let g1 = taps(G1);
     let g2 = taps(G2);
@@ -106,8 +106,8 @@ mod tests {
 
     #[test]
     fn encode_decode_roundtrip_with_real_header_bits() {
-        // Bu tam olarak KG-STV_MSK_text.mp3'ten gerçek off-air kayıttan Viterbi ile
-        // metric=0 çözülen 54-bit header (bkz. docs/protocol_spec.md).
+        // This is exactly the 54-bit header decoded with Viterbi at metric=0 from the real
+        // off-air recording KG-STV_MSK_text.mp3 (see docs/protocol_spec.md).
         let raw: Vec<u8> = vec![0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1,0,0,0,0,1,1,1,1,0,0,0,0,0,0,1,1,0,0,1,1,1,0,0,0,0,0,0,1,0];
         assert_eq!(raw.len(), 54);
         let enc = encode(&raw);

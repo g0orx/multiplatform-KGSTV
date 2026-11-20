@@ -1,8 +1,8 @@
-//! Canlı ses yakalama (RX) ve çalma (TX): varsayılan giriş/çıkış cihazlarıyla `cpal`
-//! üzerinden — Windows (WASAPI), Linux (ALSA), macOS (CoreAudio). Giriş tarafı `wav.rs` ile
-//! aynı `f64` mono örnek formatını üretir, böylece aynı `session::decode_wav_*` fonksiyonları
-//! hem dosyadan hem canlı akıştan beslenebilir. Çıkış tarafı, `session::encode_session_audio`
-//! ile üretilmiş bir modüle edilmiş sinyali doğrudan hoparlöre/ses kartına çalar.
+//! Live audio capture (RX) and playback (TX): via `cpal` with the default input/output devices
+//! — Windows (WASAPI), Linux (ALSA), macOS (CoreAudio). The input side produces the same
+//! `f64` mono sample format as `wav.rs`, so the same `session::decode_wav_*` functions can be fed
+//! from both a file and a live stream. The output side plays a modulated signal produced by
+//! `session::encode_session_audio` directly to the speaker/sound card.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -11,18 +11,18 @@ use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-/// Sürekli büyüyen ama belirli bir süreyi aşınca baştan kırpılan (ring-buffer benzeri) örnek
-/// tamponu. `max_samples` aşılınca en eski örnekler atılır — bellek sınırsız büyümesin diye.
+/// Sample buffer that keeps growing but is trimmed from the front once it exceeds a certain
+/// duration (ring-buffer-like). Once `max_samples` is exceeded the oldest samples are dropped — so memory does not grow unbounded.
 struct RingBuffer {
     data: VecDeque<f64>,
     max_samples: usize,
-    /// `data[0]`'ın MUTLAK (tampon hiç kırpılmamış gibi, oturumun başından sayılan) örnek
-    /// indeksi — yani şimdiye kadar öne'den atılan toplam örnek sayısı. Tampon dolup eski
-    /// örnekler atılmaya başladığında, `kgstv-gui`'nin önbelleğe aldığı bir anchor'ın (bir
-    /// önceki `snapshot()`'a göre hesaplanmış örnek konumu) YENİ bir `snapshot()`'a göre
-    /// KAYMIŞ olacağını fark edip düzeltebilmesi için gerekli (bkz. `kgstv-gui`
-    /// `maybe_kick_live_decode` dokümantasyonu — kullanıcı geri bildirimi: "ilk seferinde
-    /// duzgun calisiyor ama sonra ... tekrar tum frameleri almaya calisti").
+    /// The ABSOLUTE sample index of `data[0]` (counted from the start of the session, as if the buffer
+    /// had never been trimmed) — i.e. the total number of samples dropped from the front so far. Once
+    /// the buffer fills and old samples start being dropped, this is needed so that `kgstv-gui` can
+    /// notice and correct the fact that a cached anchor (a sample position computed relative to a
+    /// previous `snapshot()`) has SHIFTED relative to a NEW `snapshot()` (see the `kgstv-gui`
+    /// `maybe_kick_live_decode` documentation — user feedback: "it works fine the first
+    /// time but then ... it tried to receive all the frames again").
     front_absolute_index: u64,
 }
 
@@ -36,8 +36,8 @@ impl RingBuffer {
     }
 }
 
-/// Sistemdeki ses giriş cihazlarının adlarını listeler (dropdown doldurmak için).
-/// (cpal 0.18: cihaz adı `Device::name()` değil `Display`/`to_string()` üzerinden gelir.)
+/// Lists the names of the system's audio input devices (for populating a dropdown).
+/// (cpal 0.18: the device name comes via `Display`/`to_string()`, not `Device::name()`.)
 pub fn list_input_devices() -> Vec<String> {
     let host = cpal::default_host();
     match host.input_devices() {
@@ -46,7 +46,7 @@ pub fn list_input_devices() -> Vec<String> {
     }
 }
 
-/// Sistemdeki ses çıkış cihazlarının adlarını listeler (dropdown doldurmak için).
+/// Lists the names of the system's audio output devices (for populating a dropdown).
 pub fn list_output_devices() -> Vec<String> {
     let host = cpal::default_host();
     match host.output_devices() {
@@ -55,12 +55,12 @@ pub fn list_output_devices() -> Vec<String> {
     }
 }
 
-/// Varsayılan giriş cihazının adı (dropdown'da "hangisi seçili olsun" için).
+/// Name of the default input device (for "which one should be selected" in the dropdown).
 pub fn default_input_device_name() -> Option<String> {
     cpal::default_host().default_input_device().map(|d| d.to_string())
 }
 
-/// Varsayılan çıkış cihazının adı.
+/// Name of the default output device.
 pub fn default_output_device_name() -> Option<String> {
     cpal::default_host().default_output_device().map(|d| d.to_string())
 }
@@ -70,10 +70,10 @@ fn find_input_device(name: Option<&str>) -> Result<cpal::Device, String> {
     match name {
         Some(n) => host
             .input_devices()
-            .map_err(|e| format!("Giriş cihazları listelenemedi: {e}"))?
+            .map_err(|e| format!("Could not list input devices: {e}"))?
             .find(|d| d.to_string() == n)
-            .ok_or_else(|| format!("Giriş cihazı bulunamadı: {n}")),
-        None => host.default_input_device().ok_or_else(|| "Varsayılan ses giriş cihazı bulunamadı".to_string()),
+            .ok_or_else(|| format!("Input device not found: {n}")),
+        None => host.default_input_device().ok_or_else(|| "Default audio input device not found".to_string()),
     }
 }
 
@@ -82,34 +82,34 @@ fn find_output_device(name: Option<&str>) -> Result<cpal::Device, String> {
     match name {
         Some(n) => host
             .output_devices()
-            .map_err(|e| format!("Çıkış cihazları listelenemedi: {e}"))?
+            .map_err(|e| format!("Could not list output devices: {e}"))?
             .find(|d| d.to_string() == n)
-            .ok_or_else(|| format!("Çıkış cihazı bulunamadı: {n}")),
-        None => host.default_output_device().ok_or_else(|| "Varsayılan ses çıkış cihazı bulunamadı".to_string()),
+            .ok_or_else(|| format!("Output device not found: {n}")),
+        None => host.default_output_device().ok_or_else(|| "Default audio output device not found".to_string()),
     }
 }
 
-/// Aktif bir canlı yakalama oturumu. `Drop` edildiğinde akış durur.
+/// An active live capture session. The stream stops when it is `Drop`ped.
 pub struct LiveCapture {
     pub sample_rate: f64,
     buffer: Arc<Mutex<RingBuffer>>,
     gain: Arc<Mutex<f32>>,
-    /// En son yakalanan parçanın tepe (peak) genliği (0.0'dan yukarı, tipik olarak ~0-1.5) —
-    /// GUI'nin VU metresi bunu periyodik olarak okur.
+    /// Peak amplitude of the most recently captured chunk (from 0.0 upward, typically ~0-1.5) —
+    /// the GUI's VU meter reads this periodically.
     level: Arc<Mutex<f32>>,
     _stream: cpal::Stream,
 }
 
 impl LiveCapture {
-    /// Belirtilen (ya da `None` ise varsayılan) giriş cihazından yakalamayı başlatır.
-    /// `max_seconds`: tamponda tutulacak azami süre (daha eski örnekler otomatik atılır).
-    /// `initial_gain`: örneklere uygulanan çarpan (1.0 = değişiklik yok) — sonradan
-    /// `set_gain()` ile canlı olarak değiştirilebilir.
+    /// Starts capturing from the given (or, if `None`, the default) input device.
+    /// `max_seconds`: maximum duration to keep in the buffer (older samples are dropped automatically).
+    /// `initial_gain`: multiplier applied to the samples (1.0 = no change) — can be changed live
+    /// later via `set_gain()`.
     pub fn start(max_seconds: f64, device_name: Option<&str>, initial_gain: f32) -> Result<Self, String> {
         let device = find_input_device(device_name)?;
         let config = device
             .default_input_config()
-            .map_err(|e| format!("Giriş yapılandırması alınamadı: {e}"))?;
+            .map_err(|e| format!("Could not get input configuration: {e}"))?;
 
         let sample_rate = config.sample_rate() as f64;
         let channels = config.channels() as usize;
@@ -121,7 +121,7 @@ impl LiveCapture {
         let level = Arc::new(Mutex::new(0.0f32));
         let level_cb = level.clone();
 
-        let err_fn = |e| eprintln!("[kgstv-modem::live] ses akışı hatası: {e}");
+        let err_fn = |e| eprintln!("[kgstv-modem::live] audio stream error: {e}");
         let stream_config: cpal::StreamConfig = config.clone().into();
 
         let stream = match config.sample_format() {
@@ -134,7 +134,7 @@ impl LiveCapture {
                     err_fn,
                     None,
                 )
-                .map_err(|e| format!("Giriş akışı kurulamadı: {e}"))?,
+                .map_err(|e| format!("Could not build input stream: {e}"))?,
             cpal::SampleFormat::I16 => device
                 .build_input_stream(
                     stream_config.clone(),
@@ -146,7 +146,7 @@ impl LiveCapture {
                     err_fn,
                     None,
                 )
-                .map_err(|e| format!("Giriş akışı kurulamadı: {e}"))?,
+                .map_err(|e| format!("Could not build input stream: {e}"))?,
             cpal::SampleFormat::U16 => device
                 .build_input_stream(
                     stream_config.clone(),
@@ -158,31 +158,31 @@ impl LiveCapture {
                     err_fn,
                     None,
                 )
-                .map_err(|e| format!("Giriş akışı kurulamadı: {e}"))?,
-            fmt => return Err(format!("Desteklenmeyen örnek formatı: {fmt:?}")),
+                .map_err(|e| format!("Could not build input stream: {e}"))?,
+            fmt => return Err(format!("Unsupported sample format: {fmt:?}")),
         };
 
-        stream.play().map_err(|e| format!("Ses akışı başlatılamadı: {e}"))?;
+        stream.play().map_err(|e| format!("Could not start audio stream: {e}"))?;
 
         Ok(LiveCapture { sample_rate, buffer, gain, level, _stream: stream })
     }
 
-    /// O ana kadar biriken örneklerin bir kopyasını döner (decode için).
+    /// Returns a copy of the samples accumulated so far (for decoding).
     pub fn snapshot(&self) -> Vec<f64> {
         let buf = self.buffer.lock().unwrap();
         buf.data.iter().copied().collect()
     }
 
-    /// Şu ana kadar biriken örnek sayısı.
+    /// Number of samples accumulated so far.
     pub fn len(&self) -> usize {
         self.buffer.lock().unwrap().data.len()
     }
 
-    /// `snapshot()`'ın döneceği dizinin İLK örneğinin MUTLAK (oturumun başından sayılan)
-    /// indeksi — tampon henüz hiç kırpılmadıysa 0, kırpılmaya başladıysa şimdiye kadar
-    /// atılan örnek sayısı. Önceden önbelleğe alınmış bir anchor'ın (eski bir `snapshot()`'a
-    /// göre hesaplanmıştı) yeni bir `snapshot()`'a göre ne kadar KAYDIĞINI hesaplamak için
-    /// kullanılır (bkz. `kgstv-gui` `maybe_kick_live_decode`).
+    /// The ABSOLUTE index (counted from the start of the session) of the FIRST sample of the array
+    /// `snapshot()` will return — 0 if the buffer has not been trimmed yet, otherwise the number of
+    /// samples dropped so far. Used to compute how far a previously cached anchor (computed relative
+    /// to an old `snapshot()`) has SHIFTED relative to a new `snapshot()`
+    /// (see `kgstv-gui` `maybe_kick_live_decode`).
     pub fn front_absolute_index(&self) -> u64 {
         self.buffer.lock().unwrap().front_absolute_index
     }
@@ -191,8 +191,8 @@ impl LiveCapture {
         self.len() == 0
     }
 
-    /// Giriş kazancını (çarpan; 1.0 = değişiklik yok) CANLI olarak günceller — akışı yeniden
-    /// başlatmaya gerek yok.
+    /// Updates the input gain (multiplier; 1.0 = no change) LIVE — no need to restart
+    /// the stream.
     pub fn set_gain(&self, gain: f32) {
         *self.gain.lock().unwrap() = gain.max(0.0);
     }
@@ -201,19 +201,19 @@ impl LiveCapture {
         *self.gain.lock().unwrap()
     }
 
-    /// En son yakalanan parçanın tepe (peak) genliği — VU metresi için (GUI periyodik okur).
+    /// Peak amplitude of the most recently captured chunk — for the VU meter (the GUI reads it periodically).
     pub fn level(&self) -> f32 {
         *self.level.lock().unwrap()
     }
 }
 
-/// Zaten yüklenmiş bir WAV'ın örneklerini GERÇEK ZAMANLI hızda (parça parça, `sleep` ile
-/// gerçek çalma süresine eşit toplam sürede) paylaşımlı bir tampona besleyen simülatör.
-/// `LiveCapture` ile aynı arayüz şekli (`sample_rate`, `snapshot()`, `len()`) — çağıran taraf
-/// (`kgstv-gui`), gerçek mikrofon dinleme ile bir WAV dosyasını "canlıymış gibi oynatma"yı
-/// aynı ilerlemeli decode/göz-diyagramı koduyla ele alabilsin diye. Anlık (tüm dosyayı bir
-/// kerede işleyen) decode'un aksine, göz diyagramının SADECE "o ana kadar gelen" sesi
-/// görebilmesini ve tile'ların gerçek KG-STV hızında ekrana gelmesini sağlar.
+/// Simulator that feeds the samples of an already-loaded WAV into a shared buffer at REAL-TIME speed
+/// (chunk by chunk, with `sleep`, over a total time equal to the real playback duration).
+/// Same interface shape as `LiveCapture` (`sample_rate`, `snapshot()`, `len()`) — so the caller
+/// (`kgstv-gui`) can handle real microphone listening and "playing a WAV file as if live" with
+/// the same progressive decode/eye-diagram code. Unlike an instant decode (which processes the whole
+/// file at once), it lets the eye diagram see ONLY the audio "received so far" and makes the
+/// tiles appear on screen at real KG-STV speed.
 pub struct PlaybackSim {
     pub sample_rate: f64,
     total_len: usize,
@@ -223,8 +223,8 @@ pub struct PlaybackSim {
 }
 
 impl PlaybackSim {
-    /// `samples`'i `sample_rate` hızında, ~100ms'lik parçalar hâlinde beslemeye başlar
-    /// (arka plan thread'inde) ve hemen döner.
+    /// Starts feeding `samples` at `sample_rate` speed in ~100ms chunks
+    /// (on a background thread) and returns immediately.
     pub fn start(samples: Vec<f64>, sample_rate: f64) -> Self {
         let total_len = samples.len();
         let buffer = Arc::new(Mutex::new(Vec::with_capacity(total_len)));
@@ -235,7 +235,7 @@ impl PlaybackSim {
         let done_cb = done.clone();
         let stop_cb = stop.clone();
         std::thread::spawn(move || {
-            let chunk_len = ((sample_rate * 0.1) as usize).max(1); // ~100ms'lik parçalar
+            let chunk_len = ((sample_rate * 0.1) as usize).max(1); // ~100ms chunks
             let mut i = 0;
             while i < samples.len() {
                 if stop_cb.load(Ordering::Relaxed) {
@@ -254,12 +254,12 @@ impl PlaybackSim {
         PlaybackSim { sample_rate, total_len, buffer, done, stop }
     }
 
-    /// O ana kadar "gelmiş" örneklerin bir kopyası.
+    /// A copy of the samples that have "arrived" so far.
     pub fn snapshot(&self) -> Vec<f64> {
         self.buffer.lock().unwrap().clone()
     }
 
-    /// O ana kadar gelen örnek sayısı.
+    /// Number of samples received so far.
     pub fn len(&self) -> usize {
         self.buffer.lock().unwrap().len()
     }
@@ -268,12 +268,12 @@ impl PlaybackSim {
         self.len() == 0
     }
 
-    /// Dosyanın tamamı beslendi mi (oynatma bitti mi).
+    /// Has the whole file been fed (has playback finished)?
     pub fn is_done(&self) -> bool {
         self.done.load(Ordering::Relaxed)
     }
 
-    /// Toplam örnek sayısı (dosyanın tamamı) — ilerleme göstermek için.
+    /// Total number of samples (the whole file) — for showing progress.
     pub fn total_len(&self) -> usize {
         self.total_len
     }
@@ -285,16 +285,16 @@ impl Drop for PlaybackSim {
     }
 }
 
-/// Verilen mono örnekleri (-1.0..1.0, `sample_rate` Hz) belirtilen (ya da `None` ise
-/// varsayılan) ses çıkış cihazından çalar, çalma bitene kadar (çağıran thread'i) bloklar.
-/// `gain`: çalmadan önce örneklere uygulanan çarpan (1.0 = değişiklik yok). `session::
-/// encode_session_audio` ile üretilen TX sinyalini doğrudan hoparlöre/ses kartına vermek için
-/// — çağıran, UI donmasın diye bunu ayrı bir thread'den çağırmalıdır.
+/// Plays the given mono samples (-1.0..1.0, `sample_rate` Hz) on the given (or, if `None`, the
+/// default) audio output device, blocking (the calling thread) until playback finishes.
+/// `gain`: multiplier applied to the samples before playback (1.0 = no change). For feeding the TX
+/// signal produced by `session::encode_session_audio` directly to the speaker/sound card
+/// — the caller should call this from a separate thread so the UI does not freeze.
 ///
-/// `stop`: verilirse, çalma sırasında periyodik olarak kontrol edilir — `true` olduğunda
-/// çalma HEMEN kesilir (akış drop edilir) ve fonksiyon erken döner. Bir gönderim (özellikle
-/// tam bir görüntü) dakikalarca sürebileceğinden, kullanıcının "Çal" adımını iptal
-/// edebilmesi için (kullanıcı isteği: "gondermede cal adimini durdurabilecegim bir buton").
+/// `stop`: if given, it is checked periodically during playback — when it becomes `true`
+/// playback is cut off IMMEDIATELY (the stream is dropped) and the function returns early. Since a
+/// transmission (especially a full image) can take minutes, this lets the user cancel the "Play"
+/// step (user request: "a button that lets me stop the play step while sending").
 pub fn play_blocking(
     samples: &[f64],
     sample_rate: f64,
@@ -313,21 +313,21 @@ pub fn play_blocking(
     let want_sr = sample_rate.round() as u32;
     let ranges: Vec<_> = device
         .supported_output_configs()
-        .map_err(|e| format!("Çıkış yapılandırmaları alınamadı: {e}"))?
+        .map_err(|e| format!("Could not get output configurations: {e}"))?
         .collect();
 
-    // Birçok gerçek çıkış cihazı (ör. dahili hoparlörler) SADECE kendi sabit örnekleme hızını
-    // (genelde 48000 Hz) destekler, 44100 Hz'i değil. İstenen hız desteklenmiyorsa cihazın
-    // varsayılan yapılandırmasına düş ve sesi o hıza yeniden örnekle (basit doğrusal
-    // interpolasyon — TX sinyalinin bant genişliği düşük olduğundan (500-2500Hz) pratikte
-    // kayıpsız sayılabilir).
+    // Many real output devices (e.g. built-in speakers) support ONLY their own fixed sample rate
+    // (usually 48000 Hz), not 44100 Hz. If the requested rate is not supported, fall back to the
+    // device's default configuration and resample the audio to that rate (simple linear
+    // interpolation — since the TX signal's bandwidth is low (500-2500Hz) this can be considered
+    // practically lossless).
     let exact = ranges.iter().find(|r| r.min_sample_rate() <= want_sr && want_sr <= r.max_sample_rate());
     let (supported, playback_samples): (cpal::SupportedStreamConfig, Vec<f64>) = match exact {
         Some(range) => (range.clone().with_sample_rate(want_sr), samples.to_vec()),
         None => {
             let default_cfg = device
                 .default_output_config()
-                .map_err(|e| format!("Varsayılan çıkış yapılandırması alınamadı: {e}"))?;
+                .map_err(|e| format!("Could not get default output configuration: {e}"))?;
             let target_sr = default_cfg.sample_rate() as f64;
             (default_cfg, resample_linear(samples, sample_rate, target_sr))
         }
@@ -341,7 +341,7 @@ pub fn play_blocking(
     let samples = Arc::new(playback_samples);
     let total = samples.len();
     let pos = Arc::new(AtomicUsize::new(0));
-    let err_fn = |e| eprintln!("[kgstv-modem::live] çıkış akışı hatası: {e}");
+    let err_fn = |e| eprintln!("[kgstv-modem::live] output stream error: {e}");
 
     let stream = match sample_format {
         cpal::SampleFormat::F32 => {
@@ -354,7 +354,7 @@ pub fn play_blocking(
                     err_fn,
                     None,
                 )
-                .map_err(|e| format!("Çıkış akışı kurulamadı: {e}"))?
+                .map_err(|e| format!("Could not build output stream: {e}"))?
         }
         cpal::SampleFormat::I16 => {
             let samples_cb = samples.clone();
@@ -368,18 +368,18 @@ pub fn play_blocking(
                     err_fn,
                     None,
                 )
-                .map_err(|e| format!("Çıkış akışı kurulamadı: {e}"))?
+                .map_err(|e| format!("Could not build output stream: {e}"))?
         }
-        fmt => return Err(format!("Desteklenmeyen çıkış örnek formatı: {fmt:?}")),
+        fmt => return Err(format!("Unsupported output sample format: {fmt:?}")),
     };
 
-    stream.play().map_err(|e| format!("Çıkış akışı başlatılamadı: {e}"))?;
-    // `total`/`samples`, yeniden örneklenmiş olabileceğinden süre hesabı `effective_sample_rate`
-    // (cihazın gerçekten çaldığı hız) ile yapılmalı — orijinal `sample_rate` ile DEĞİL.
+    stream.play().map_err(|e| format!("Could not start output stream: {e}"))?;
+    // Since `total`/`samples` may have been resampled, the duration must be computed with
+    // `effective_sample_rate` (the rate the device actually plays at) — NOT the original `sample_rate`.
     let duration = Duration::from_secs_f64(total as f64 / effective_sample_rate + 0.3);
-    // Tek bir uzun `sleep` yerine kısa aralıklarla uyuyup `stop` bayrağını kontrol et —
-    // kullanıcı iptal ederse akış (bu fonksiyondan erken dönüşle `stream` drop edilince)
-    // HEMEN durur, dakikalarca beklemek zorunda kalmaz.
+    // Instead of one long `sleep`, sleep in short intervals and check the `stop` flag —
+    // if the user cancels, the stream stops IMMEDIATELY (when `stream` is dropped by returning early
+    // from this function), with no need to wait for minutes.
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
     let mut elapsed = Duration::ZERO;
     while elapsed < duration {
@@ -395,9 +395,9 @@ pub fn play_blocking(
     Ok(())
 }
 
-/// Basit doğrusal interpolasyonla yeniden örnekleme (`from_sr` Hz -> `to_sr` Hz). Yüksek kaliteli
-/// bir resampler değil, ama KG-STV'nin dar bandı (500-2500Hz) için, sadece hoparlörden çalma
-/// amacıyla yeterli — WAV kaydı/decode her zaman orijinal (yeniden örneklenmemiş) hızda kalır.
+/// Resampling by simple linear interpolation (`from_sr` Hz -> `to_sr` Hz). Not a high-quality
+/// resampler, but sufficient for KG-STV's narrow band (500-2500Hz), purely for playback through
+/// the speaker — WAV recording/decoding always stays at the original (non-resampled) rate.
 fn resample_linear(samples: &[f64], from_sr: f64, to_sr: f64) -> Vec<f64> {
     if samples.is_empty() || (from_sr - to_sr).abs() < 1e-6 {
         return samples.to_vec();
@@ -459,19 +459,19 @@ fn push_downmixed<T: Copy>(
 mod tests {
     use super::*;
 
-    /// `front_absolute_index`, tampon kapasiteyi aşıp eski örnekler atılmaya başladığında
-    /// doğru artmalı — `kgstv-gui`'nin önbelleğe aldığı bir anchor'ı, tampon kırpıldıkça
-    /// doğru şekilde yeniden yerelleştirebilmesi (bkz. `LiveCapture::front_absolute_index`
-    /// dokümantasyonu) buna dayanıyor.
+    /// `front_absolute_index` must increase correctly once the buffer exceeds capacity and old
+    /// samples start being dropped — `kgstv-gui` relies on this to correctly re-localize a cached
+    /// anchor as the buffer is trimmed (see the `LiveCapture::front_absolute_index`
+    /// documentation).
     #[test]
     fn ring_buffer_tracks_front_absolute_index_as_it_evicts() {
         let mut buf = RingBuffer { data: VecDeque::new(), max_samples: 5, front_absolute_index: 0 };
 
         buf.push_slice(&[1.0, 2.0, 3.0]);
-        assert_eq!(buf.front_absolute_index, 0); // henüz kırpma yok (3 < kapasite 5)
+        assert_eq!(buf.front_absolute_index, 0); // no trimming yet (3 < capacity 5)
         assert_eq!(buf.data.iter().copied().collect::<Vec<_>>(), vec![1.0, 2.0, 3.0]);
 
-        buf.push_slice(&[4.0, 5.0, 6.0, 7.0]); // toplam 7 > kapasite 5 -> 2 tanesi atılır
+        buf.push_slice(&[4.0, 5.0, 6.0, 7.0]); // total 7 > capacity 5 -> 2 are dropped
         assert_eq!(buf.front_absolute_index, 2);
         assert_eq!(buf.data.iter().copied().collect::<Vec<_>>(), vec![3.0, 4.0, 5.0, 6.0, 7.0]);
 
@@ -482,8 +482,8 @@ mod tests {
 
     #[test]
     fn playback_sim_grows_over_time_and_finishes() {
-        let sr = 4410.0; // düşük hız: testin hızlı bitmesi için (~100ms parça -> 441 örnek)
-        let samples: Vec<f64> = (0..(sr as usize) / 2).map(|i| i as f64).collect(); // 0.5 sn'lik veri
+        let sr = 4410.0; // low rate: so the test finishes quickly (~100ms chunk -> 441 samples)
+        let samples: Vec<f64> = (0..(sr as usize) / 2).map(|i| i as f64).collect(); // 0.5 s of data
         let sim = PlaybackSim::start(samples.clone(), sr);
         assert_eq!(sim.total_len(), samples.len());
         assert!(sim.is_empty());
@@ -491,7 +491,7 @@ mod tests {
 
         std::thread::sleep(Duration::from_millis(150));
         let mid = sim.len();
-        assert!(mid > 0 && mid < samples.len(), "mid={mid} (0 ile {} arasında olmalı)", samples.len());
+        assert!(mid > 0 && mid < samples.len(), "mid={mid} (should be between 0 and {})", samples.len());
 
         std::thread::sleep(Duration::from_millis(600));
         assert!(sim.is_done());
@@ -500,22 +500,22 @@ mod tests {
 
     #[test]
     fn resample_linear_preserves_low_frequency_tone() {
-        // 44100 Hz'de üretilen 1500 Hz'lik (KG-STV bandının merkezi) bir ton, 48000 Hz'e yeniden
-        // örneklendiğinde hâlâ ~1500 Hz civarında, kabaca aynı genlikte olmalı (basit doğrusal
-        // interpolasyonun bu dar bant için yeterli olduğunun kanıtı — bkz. `play_blocking`).
+        // A 1500 Hz tone (the centre of the KG-STV band) generated at 44100 Hz, when resampled to
+        // 48000 Hz, should still be around ~1500 Hz with roughly the same amplitude (proof that simple
+        // linear interpolation is sufficient for this narrow band — see `play_blocking`).
         let from_sr = 44100.0;
         let to_sr = 48000.0;
         let freq = 1500.0;
-        let n = 4410; // 0.1 sn
+        let n = 4410; // 0.1 s
         let input: Vec<f64> =
             (0..n).map(|i| (2.0 * std::f64::consts::PI * freq * i as f64 / from_sr).sin()).collect();
         let output = resample_linear(&input, from_sr, to_sr);
 
-        // Süre korunmalı (± birkaç örnek).
+        // Duration must be preserved (± a few samples).
         let expected_len = (n as f64 * to_sr / from_sr).round() as usize;
         assert!((output.len() as i64 - expected_len as i64).abs() <= 2, "len={}", output.len());
 
-        // Çıkışta hâlâ ~1500Hz civarında salınım var mı: basit bir sıfır-geçiş sayımıyla kontrol et.
+        // Is there still oscillation around ~1500Hz at the output: check with a simple zero-crossing count.
         let zero_crossings = output.windows(2).filter(|w| w[0] * w[1] < 0.0).count();
         let expected_crossings = (2.0 * freq * (output.len() as f64 / to_sr)).round();
         let ratio = zero_crossings as f64 / expected_crossings;

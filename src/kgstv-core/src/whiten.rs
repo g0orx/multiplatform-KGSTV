@@ -1,10 +1,10 @@
-//! Whitening (beyazlatma): 127-bit M-sequence ile XOR. Her chunk'ın (header, data) başında
-//! index sıfırdan yeniden başlar — gerçek kayıt üzerinde doğrulandı (bkz. docs/protocol_spec.md).
+//! Whitening: XOR with a 127-bit M-sequence. At the start of each chunk (header, data) the
+//! index restarts from zero — verified against a real recording (see docs/protocol_spec.md).
 
 use crate::constants::whitening_bits;
 
-/// `bits` üzerine whitening uygular/kaldırır (XOR kendine terstir, aynı fonksiyon
-/// hem encode hem decode için kullanılır). Sayaç her çağrıda 0'dan başlar (bir chunk'a karşılık).
+/// Applies/removes whitening on `bits` (XOR is its own inverse, so the same function
+/// is used for both encode and decode). The counter starts at 0 on every call (one per chunk).
 pub fn whiten(bits: &[u8]) -> Vec<u8> {
     let w = whitening_bits();
     bits.iter().enumerate().map(|(i, &b)| b ^ w[i % w.len()]).collect()

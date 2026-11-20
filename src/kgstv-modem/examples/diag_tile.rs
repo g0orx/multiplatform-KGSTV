@@ -1,12 +1,12 @@
-//! Geçici tanı aracı: bir WAV'ı decode edip HER görüntü tile'ının x,y,sc ve 6 ham (dequant
-//! ÖNCESİ) DC katsayısını CSV olarak yazdırır — doğru kuantizasyon ölçeğini gerçek referans
-//! görüntüyle karşılaştırarak (Python) ampirik olarak türetmek için.
+//! Temporary diagnostic tool: decodes a WAV and prints the x,y,sc and the 6 raw (BEFORE
+//! dequantization) DC coefficients of EVERY image tile as CSV — to empirically derive the correct
+//! quantization scale by comparing against a real reference image (Python).
 use kgstv_core::constants::Command;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let in_path = &args[1];
-    let audio = kgstv_modem::load_mono(in_path).expect("wav okunamadı");
+    let audio = kgstv_modem::load_mono(in_path).expect("could not read wav");
     let coarse_search_len = ((15.0 * audio.sample_rate) as i64).min(audio.samples.len() as i64);
     let (_anchor, frames) = kgstv_modem::decode_wav_sequential(&audio.samples, audio.sample_rate, coarse_search_len, 2000);
 

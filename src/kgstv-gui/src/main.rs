@@ -1,16 +1,16 @@
-//! KG-STV masaüstü arayüzü. İki mod:
-//! - **RX**: bir WAV kaydını (gerçek off-air ya da kontrollü test kaydı) açar ya da varsayılan
-//!   ses giriş cihazından (mikrofon/soundcard) canlı dinler, `kgstv-modem`'in MSK
-//!   demodülatörü + `kgstv-core`'un çerçeve/JPEG çözücüsüyle arka planda decode eder ve
-//!   görüntüyü, KG-STV'nin orijinal davranışına benzer şekilde tile tile canlı olarak çizer.
-//! - **TX**: bir resim dosyası + isteğe bağlı çağrı işareti/metin alır, 320×240'a ölçekleyip
-//!   300 adet 16×16 JPEG tile'ına encode eder, `kgstv-core::frame` + `kgstv-modem::session`
-//!   ile tam bir KG-STV MSK oturumuna (ses) çevirir; WAV olarak kaydedilebilir ya da
-//!   doğrudan hoparlörden çalınabilir.
+//! KG-STV desktop interface. Two modes:
+//! - **RX**: opens a WAV recording (real off-air or a controlled test recording) or listens live
+//!   from the default audio input device (microphone/soundcard), decodes in the background with
+//!   `kgstv-modem`'s MSK demodulator + `kgstv-core`'s frame/JPEG decoder, and draws the
+//!   image live, tile by tile, similar to KG-STV's original behaviour.
+//! - **TX**: takes an image file + optional callsign/text, scales it to 320×240, encodes it into
+//!   300 16×16 JPEG tiles, and converts it with `kgstv-core::frame` + `kgstv-modem::session`
+//!   into a full KG-STV MSK session (audio); this can be saved as a WAV or
+//!   played directly through the speaker.
 //!
-//! Ayrıca sinyal kalitesini/zamanlamasını görsel olarak değerlendirmek için bir göz diyagramı
-//! (eye diagram) gösterir. Tek kod tabanı — Windows/Linux/macOS'ta native pencere olarak
-//! derlenir (egui/eframe).
+//! It also shows an eye diagram for visually assessing signal quality/timing.
+//! Single code base — builds as a native window on Windows/Linux/macOS
+//! (egui/eframe).
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -31,44 +31,44 @@ const IMG_H: usize = 240;
 const TILES_X: usize = IMG_W / TILE;
 const TILES_Y: usize = IMG_H / TILE;
 const MAX_LOG_LINES: usize = 500;
-/// TX ses üretimi için sabit örnekleme hızı (WAV kaydı ve çalma için).
+/// Fixed sample rate for TX audio generation (for WAV saving and playback).
 const TX_SAMPLE_RATE: f64 = 44100.0;
 
-/// Orijinal Windows KGSTV göndericisindeki "Scale" açılır listesinin BİREBİR aynısı (kullanıcı
-/// tarafından bildirildi) — 16 değer, header'ın 4-bit `sc` alanına dizideki İNDEKSİ (0-15)
-/// olarak kodlanıyor; ondalık etiketler (0.07 … 2.0) sadece kozmetik, `kgstv.ini`'deki
-/// `ImageQ` ayarının (bkz. docs/protocol_spec.md, "ImageQ=10 ... sc=10 birebir örtüşüyor")
-/// insan-okunur karşılığı. Varsayılan indeks 10 ("1.0") — `ImageQ=10`'un gerçek kayıtla
-/// çapraz doğrulanan varsayılan değeriyle aynı.
+/// EXACTLY the same as the "Scale" drop-down list in the original Windows KGSTV sender (reported
+/// by the user) — 16 values; the INDEX (0-15) into the array is encoded in the header's 4-bit `sc`
+/// field; the decimal labels (0.07 … 2.0) are purely cosmetic, the human-readable counterpart of
+/// the `ImageQ` setting in `kgstv.ini` (see docs/protocol_spec.md, "ImageQ=10 ... sc=10 match
+/// exactly"). Default index 10 ("1.0") — the same as the default `ImageQ=10` value
+/// cross-checked against a real recording.
 const TX_SCALE_LABELS: [&str; 16] =
     ["0.07", "0.08", "0.09", "0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.8", "1.0", "1.20", "1.40", "1.60", "1.80", "2.0"];
 
-/// Canlı modda tamponda tutulan azami ses süresi — bundan eskisi otomatik atılır.
+/// Maximum audio duration kept in the buffer in live mode — anything older is dropped automatically.
 ///
-/// 60 sn olarak bırakılmıştı ama bu, tam bir 300 karolu (20×15) görüntü aktarımının süresinden
-/// KISA — gerçek off-air kayıtları 78-148 sn arasında sürüyor (bkz. docs/protocol_spec.md,
-/// "148 saniyelik kayıt"; ve samples/*.wav test desenleri: MSK+konvolüsyon en kötü durumda
-/// ~109 sn). Tampon dolup `maybe_kick_live_decode` tam sıfırlama yaptığında görüntü YARIM
-/// kalmışken siliniyordu — kullanıcı geri bildirimi: "cagri isaretini cozuyor ama resim
-/// gelmiyor" (çağrı işareti aktarımın hemen başında, tek kısa frame olduğundan 60 sn dolmadan
-/// yakalanabiliyordu, ama görüntü hiçbir zaman bitmeden tampon dolup sıfırlanıyordu). Gerçek
-/// kayıtlardaki en uzun süreden rahat bir pay bırakmak için 200 sn'ye çıkarıldı.
+/// This had been left at 60 s, but that is SHORTER than the duration of a full 300-tile (20×15)
+/// image transfer — real off-air recordings last between 78 and 148 s (see docs/protocol_spec.md,
+/// "148-second recording"; and the samples/*.wav test patterns: MSK+convolution worst case
+/// ~109 s). When the buffer filled and `maybe_kick_live_decode` did a full reset, the image was
+/// wiped while only HALF received — user feedback: "it decodes the callsign but the picture
+/// doesn't come" (the callsign, being a single short frame right at the start of the transfer,
+/// could be caught before 60 s ran out, but the buffer filled and reset before the image ever
+/// finished). Increased to 200 s to leave a comfortable margin over the longest real recordings.
 const LIVE_BUFFER_SECONDS: f64 = 200.0;
-/// Canlı modda kaç saniyede bir yeniden decode denemesi yapılır.
+/// How often (in seconds) to attempt a re-decode in live mode.
 const LIVE_REDECODE_INTERVAL: Duration = Duration::from_millis(2000);
-/// Gerçek zamanlı WAV oynatma simülasyonunda kaç saniyede bir yeniden decode denemesi yapılır
-/// (canlı mikrofondan daha sık — kayıt önceden bilindiği için daha canlı bir izleme deneyimi).
+/// How often (in seconds) to attempt a re-decode in the real-time WAV playback simulation
+/// (more often than the live microphone — since the recording is known in advance, for a livelier viewing experience).
 const WAV_SIM_REDECODE_INTERVAL: Duration = Duration::from_millis(700);
-/// Göz diyagramının yeniden hesaplanma aralığı (her UI karesinde değil).
+/// Eye-diagram recomputation interval (not every UI frame).
 const EYE_UPDATE_INTERVAL: Duration = Duration::from_millis(300);
-/// Göz diyagramı için kullanılan ses penceresi (son N saniye). Faz katlaması, TEK bir
-/// (dosyanın başına yakın bulunan) `anchor`'a ve NOMİNAL sembol süresine (`sr/1200`, kayıt
-/// boyunca sabit varsayılır) dayanıyor — gerçek off-air kayıtlarda verici ile kayıt cihazının
-/// örnekleme saatleri arasındaki (küçük ama gerçek) fark, pencere ne kadar uzunsa o kadar
-/// biriken bir faz kaymasına yol açıyor (temiz/sentetik OH2UDS test sinyallerinde bu sorun
-/// yok — kullanıcı geri bildirimiyle doğrulandı: "havadan kaydettiğim seslerin ... üst üste
-/// iki kat gibi"). Pencereyi kısa tutmak bu birikimi sınırlı tutuyor; tam düzeltme için yerel/
-/// uyarlanır saat kurtarma (drift telafisi) gerekir — kapsam dışı bırakıldı.
+/// Audio window used for the eye diagram (last N seconds). The phase folding relies on a SINGLE
+/// `anchor` (found near the start of the file) and the NOMINAL symbol duration (`sr/1200`, assumed
+/// constant throughout the recording) — in real off-air recordings the (small but real) difference
+/// between the sample clocks of the transmitter and the recorder causes a phase drift that
+/// accumulates the longer the window is (clean/synthetic OH2UDS test signals do not have this
+/// problem — verified via user feedback: "the sounds I recorded off the air ... look doubled up
+/// on top of each other"). Keeping the window short keeps this accumulation limited; a full fix
+/// would need local/adaptive clock recovery (drift compensation) — left out of scope.
 const EYE_WINDOW_SECONDS: f64 = 0.4;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -78,22 +78,22 @@ enum Mode {
 }
 
 enum DecodeMsg {
-    /// Ses yüklendiği anda gönderilir (decode başlamadan önce) — göz diyagramının dosya
-    /// modunda da çalışabilmesi için ham örnekleri UI thread'ine taşır.
+    /// Sent as soon as the audio is loaded (before decoding starts) — carries the raw samples to
+    /// the UI thread so the eye diagram also works in file mode.
     AudioReady { sample_rate: f64, samples: Arc<Vec<f64>> },
     Started { label: String, sample_rate: f64, n_samples: usize },
     Frame(FrameResult),
-    /// `frames_this_pass`: BU geçişin (baştan itibaren, `skip_frames`'ten önce) bulduğu toplam
-    /// frame sayısı — anchor'ı önbelleğe alıp almamaya karar vermek için (bkz. `DecodeMsg::Done`
-    /// işleyicisi: 0 ise anchor gerçek bir senkron kilidi değil, önbelleğe ALINMAMALI).
+    /// `frames_this_pass`: total number of frames found by THIS pass (from the start, before
+    /// `skip_frames`) — for deciding whether or not to cache the anchor (see the `DecodeMsg::Done`
+    /// handler: if 0, the anchor is not a real sync lock and must NOT be cached).
     Done { anchor: f64, frames_this_pass: usize },
     Error(String),
 }
 
 enum TxMsg {
     Progress { done: usize, total: usize },
-    /// `frame_bounds`: her frame için `(com, x, y, o_ana_kadarki_kümülatif_örnek_sayısı)` —
-    /// çalma sırasında "şu ana kadar hangi tile'lar gönderildi" hesaplamak için (bkz.
+    /// `frame_bounds`: `(com, x, y, cumulative_sample_count_so_far)` for each frame —
+    /// for computing "which tiles have been sent so far" during playback (see
     /// `tx_sent_up_to_elapsed`).
     Done { sample_rate: f64, samples: Arc<Vec<f64>>, frame_bounds: Arc<Vec<(u8, u8, u8, usize)>> },
     PlaybackDone,
@@ -112,73 +112,73 @@ struct KgstvApp {
     tiles_total: usize,
     frames_total: usize,
     current_file: Option<String>,
-    /// En son CRC-doğrulanmış çağrı işareti/metin — log satırları sadece frame metadatası
-    /// gösterdiğinden (ham metni değil), bunlar log panelinde ayrıca/belirgin gösteriliyor.
+    /// Most recent CRC-verified callsign/text — since log lines show only frame metadata
+    /// (not the raw text), these are shown separately/prominently in the log panel.
     last_callsign: Option<String>,
     last_text: Option<String>,
 
-    // Ses giriş/çıkış cihazı seçimi + seviye ayarı (RX ve TX ortak).
+    // Audio input/output device selection + level control (shared by RX and TX).
     input_devices: Vec<String>,
     output_devices: Vec<String>,
-    /// `None` = sistem varsayılanı.
+    /// `None` = system default.
     selected_input_device: Option<String>,
     selected_output_device: Option<String>,
-    /// Giriş/çıkış örneklerine uygulanan çarpan (1.0 = değişiklik yok). Giriş kazancı canlı
-    /// yakalama sırasında her karede `LiveCapture::set_gain`'e yazılır (akış yeniden
-    /// başlatılmadan anlık etkili olur); çıkış kazancı çalma anında uygulanır.
+    /// Multiplier applied to input/output samples (1.0 = no change). The input gain is written to
+    /// `LiveCapture::set_gain` every frame during live capture (takes effect instantly without
+    /// restarting the stream); the output gain is applied at playback time.
     input_gain: f32,
     output_gain: f32,
 
-    // Canlı decode.
+    // Live decode.
     live: Option<LiveCapture>,
     last_live_decode: Instant,
-    /// Şu ana kadar UI'a uygulanmış frame sayısı — `wav_sim_frames_applied` ile aynı amaç
-    /// (bkz. `maybe_kick_live_decode`).
+    /// Number of frames applied to the UI so far — same purpose as `wav_sim_frames_applied`
+    /// (see `maybe_kick_live_decode`).
     live_frames_applied: usize,
-    /// İlk pas'ta bulunan senkron anchor'ı — sonraki pas'larda yeniden ARAMA yapmadan doğrudan
-    /// bu kullanılır (bkz. `maybe_kick_live_decode` dokümantasyonu — pas'tan pas'a arama
-    /// aralığı değiştiğinden yeniden arama farklı bir anchor bulup tüm yürüyüşü bozabiliyordu).
+    /// Sync anchor found in the first pass — used directly in later passes without SEARCHING
+    /// again (see the `maybe_kick_live_decode` documentation — since the search range changes from
+    /// pass to pass, re-searching could find a different anchor and break the whole walk).
     ///
-    /// **MUTLAK** (oturumun başından sayılan) bir örnek konumu olarak saklanır — `LiveCapture`
-    /// halka tamponu kırpmaya başladığında (`front_absolute_index()`), bir önceki `snapshot()`'a
-    /// göre hesaplanmış YEREL bir anchor artık YANLIŞ konuma işaret eder. Her pas'ta güncel
-    /// `front_absolute_index()` çıkarılarak o anki `snapshot()`'a göre yeniden yerelleştirilir
-    /// (bkz. `maybe_kick_live_decode`) — bu sayede tampon kırpılsa bile anchor GEÇERLİ kalır ve
-    /// (eskiden olduğu gibi) her kırpılmada TÜM ekranın silinip yeniden taranmasına gerek kalmaz
-    /// (kullanıcı geri bildirimi: "ilk seferinde duzgun calisiyor ama sonra ... tekrar tum
-    /// frameleri almaya calisti").
+    /// Stored as an **ABSOLUTE** sample position (counted from the start of the session) — once the
+    /// `LiveCapture` ring buffer starts trimming (`front_absolute_index()`), a LOCAL anchor computed
+    /// relative to a previous `snapshot()` points to the WRONG position. On each pass it is
+    /// re-localized relative to the current `snapshot()` by subtracting the current `front_absolute_index()`
+    /// (see `maybe_kick_live_decode`) — so the anchor stays VALID even when the buffer is trimmed, and
+    /// there is no need (as there used to be) to wipe and rescan the WHOLE screen on every trim
+    /// (user feedback: "it works fine the first time but then ... it tried to receive all the
+    /// frames again").
     live_cached_anchor: Option<f64>,
-    /// Şu an İŞLENMEKTE olan (ya da en son kicklenen) pas'ın `snapshot()`'ı alınırken geçerli
-    /// olan `front_absolute_index()` — o pas'ın `DecodeMsg::Done`'ı geldiğinde, döndürülen
-    /// (o pas'ın YEREL koordinatındaki) anchor'ı MUTLAK'a çevirmek için gerekli.
+    /// The `front_absolute_index()` that was current when the `snapshot()` of the pass currently BEING
+    /// PROCESSED (or most recently kicked) was taken — needed to convert the returned anchor (in that
+    /// pass's LOCAL coordinates) to ABSOLUTE when that pass's `DecodeMsg::Done` arrives.
     live_pass_front_index: u64,
 
-    // Bir WAV dosyasını gerçek zamanlı hızda "oynatıyormuş gibi" besleme (anlık toplu decode
-    // yerine — hem tile'ların gerçek KG-STV hızında gelmesi hem göz diyagramının o ana kadar
-    // gelen sesi göstermesi için).
+    // Feeding a WAV file "as if playing it" at real-time speed (instead of an instant batch decode
+    // — so the tiles arrive at real KG-STV speed and the eye diagram shows the audio received
+    // so far).
     wav_sim: Option<kgstv_modem::PlaybackSim>,
     last_wav_sim_decode: Instant,
-    /// Şu ana kadar UI'a uygulanmış (log'a eklenmiş/tile'ı çizilmiş) frame sayısı — bir sonraki
-    /// pas'ın hangi frame'leri sessizce atlayıp SADECE yenilerini uygulayacağını belirler
-    /// (bkz. `maybe_kick_wav_sim_decode`).
+    /// Number of frames applied to the UI so far (added to the log/tile drawn) — determines which
+    /// frames the next pass silently skips so it applies ONLY the new ones
+    /// (see `maybe_kick_wav_sim_decode`).
     wav_sim_frames_applied: usize,
-    /// `live_cached_anchor` ile aynı amaç, gerçek zamanlı WAV oynatma simülasyonu için.
+    /// Same purpose as `live_cached_anchor`, for the real-time WAV playback simulation.
     wav_sim_cached_anchor: Option<f64>,
-    /// Oynatma tamamen bitince yapılan son (bütün veriyi güvenlik payı olmadan kapsayan)
-    /// decode pas'ından sonra `true` — artık her 700ms'de bir yeniden decode denemesini durdurur.
+    /// `true` after the final decode pass (covering all the data with no safety margin) done once
+    /// playback has completely finished — stops the re-decode attempts every 700ms.
     wav_sim_final_pass_done: bool,
 
-    // Göz diyagramı: en son yüklenen/yakalanan ses (dosyadan ya da canlı tampondan, ya da
-    // TX'te üretilen ses), decode edilip edilmediğine bakılmaksızın periyodik yeniden çizilir.
-    // `last_anchor`: son decode'un bulduğu senkron konumu — göz diyagramının fazını gerçek
-    // sembol ızgarasına hizalamak için ŞART (bkz. `recompute_eye_diagram` dokümantasyonu;
-    // anchor'sız fold rastgele/anlamsız bir faza denk gelip düz/bilgisiz bir çizim üretiyordu).
+    // Eye diagram: the most recently loaded/captured audio (from a file or the live buffer, or the
+    // audio generated in TX), periodically redrawn regardless of whether it has been decoded.
+    // `last_anchor`: the sync position found by the last decode — ESSENTIAL for aligning the eye
+    // diagram's phase to the real symbol grid (see the `recompute_eye_diagram` documentation;
+    // folding without an anchor landed on a random/meaningless phase and produced a flat/uninformative plot).
     last_audio: Option<(f64, Arc<Vec<f64>>)>,
     last_anchor: Option<f64>,
     eye_points: Vec<(f32, f32)>,
     last_eye_update: Instant,
 
-    // TX (gönderme).
+    // TX (transmit).
     mode: Mode,
     tx_image_rgba: Vec<u8>,
     tx_texture: Option<egui::TextureHandle>,
@@ -194,25 +194,25 @@ struct KgstvApp {
     tx_status: String,
     tx_audio: Option<(f64, Arc<Vec<f64>>)>,
     tx_playing: bool,
-    /// Şu an çalınan sesi erken kesmek için — bkz. `play_tx`/`stop_tx_playback` (kullanıcı
-    /// isteği: "gondermede cal adimini durdurabilecegim bir buton").
+    /// For cutting off the currently playing audio early — see `play_tx`/`stop_tx_playback` (user
+    /// request: "a button that lets me stop the play step while sending").
     tx_play_stop: Option<Arc<AtomicBool>>,
-    /// Her frame'in kümülatif bitiş örnek konumu (bkz. `TxMsg::Done`) — çalma sırasında hangi
-    /// tile'ların gönderilmiş olduğunu (`tx_sent_up_to_elapsed`) hesaplamak için.
+    /// Cumulative end sample position of each frame (see `TxMsg::Done`) — for computing which
+    /// tiles have been sent during playback (`tx_sent_up_to_elapsed`).
     tx_frame_bounds: Arc<Vec<(u8, u8, u8, usize)>>,
-    /// Çalmanın başladığı an — ilerleme çubuğu ve tile işaretlemesi için geçen süreyi
-    /// hesaplamakta kullanılır (örnek-hassas takip yerine — `play_blocking` cihaz yeniden
-    /// örnekleme yapabildiğinden örnek sayısı zamanla birebir eşleşmeyebilir, ama süre eşleşir).
+    /// The moment playback started — used to compute elapsed time for the progress bar and tile
+    /// marking (instead of sample-precise tracking — since `play_blocking` may resample for the
+    /// device, the sample count may not match time exactly, but the duration does).
     tx_play_started: Option<Instant>,
-    /// "📤 Gönder" butonu: kodlama bitince otomatik olarak çalmayı da başlatır (kullanıcı
-    /// isteği: "butona basinca hem kodlama yapsin hem de calsin").
+    /// "📤 Send" button: automatically starts playback as well once encoding finishes (user
+    /// request: "when I press the button it should both encode and play").
     tx_auto_play_after_encode: bool,
     tx_rx: Option<Receiver<TxMsg>>,
 }
 
 impl Default for KgstvApp {
     fn default() -> Self {
-        // Başlangıç tuvali: KG-STV ekranındaki gibi düz koyu gri "henüz gelmedi" arka planı.
+        // Initial canvas: a flat dark grey "not received yet" background, like the KG-STV screen.
         let mut image_rgba = vec![0u8; IMG_W * IMG_H * 4];
         for px in image_rgba.chunks_exact_mut(4) {
             px[0] = 40;
@@ -225,7 +225,7 @@ impl Default for KgstvApp {
             texture: None,
             texture_dirty: true,
             log_lines: Vec::new(),
-            status: "Hazır — bir WAV kaydı açın ya da canlı decode'u başlatın.".to_string(),
+            status: "Ready — open a WAV recording or start live decoding.".to_string(),
             rx: None,
             decoding: false,
             tiles_ok: 0,
@@ -276,7 +276,7 @@ impl Default for KgstvApp {
             tx_fsk4: false,
             tx_encoding: false,
             tx_progress: (0, 0),
-            tx_status: "Bir resim seçin.".to_string(),
+            tx_status: "Choose an image.".to_string(),
             tx_audio: None,
             tx_playing: false,
             tx_play_stop: None,
@@ -308,12 +308,12 @@ impl KgstvApp {
     fn open_file(&mut self, ctx: &egui::Context, path: PathBuf) {
         let path_str = path.display().to_string();
         self.current_file = Some(path_str.clone());
-        self.status = format!("Yükleniyor: {path_str}");
+        self.status = format!("Loading: {path_str}");
         self.reset_decode_state();
         self.decoding = true;
-        self.live = None; // dosya modu canlı yakalamayı durdurur
-        self.wav_sim = None; // ve gerçek zamanlı oynatma simülasyonunu
-        self.last_anchor = None; // yeni dosya için eski anchor artık geçersiz
+        self.live = None; // file mode stops live capture
+        self.wav_sim = None; // and the real-time playback simulation
+        self.last_anchor = None; // the old anchor is no longer valid for a new file
 
         let (tx, rx): (Sender<DecodeMsg>, Receiver<DecodeMsg>) = mpsc::channel();
         self.rx = Some(rx);
@@ -323,7 +323,7 @@ impl KgstvApp {
             let audio = match kgstv_modem::load_mono(&path) {
                 Ok(a) => a,
                 Err(e) => {
-                    let _ = tx.send(DecodeMsg::Error(format!("WAV okunamadı: {e}")));
+                    let _ = tx.send(DecodeMsg::Error(format!("Could not read WAV: {e}")));
                     ctx1.request_repaint();
                     return;
                 }
@@ -337,76 +337,76 @@ impl KgstvApp {
     fn toggle_live(&mut self, ctx: &egui::Context) {
         if self.live.is_some() {
             self.live = None;
-            self.status = "Canlı decode durduruldu.".to_string();
+            self.status = "Live decoding stopped.".to_string();
             return;
         }
         match LiveCapture::start(LIVE_BUFFER_SECONDS, self.selected_input_device.as_deref(), self.input_gain) {
             Ok(cap) => {
-                self.status = format!("Canlı dinleniyor @ {:.0} Hz — bekleniyor...", cap.sample_rate);
-                self.current_file = Some("(canlı giriş)".to_string());
+                self.status = format!("Listening live @ {:.0} Hz — waiting...", cap.sample_rate);
+                self.current_file = Some("(live input)".to_string());
                 self.reset_decode_state();
-                self.wav_sim = None; // canlı mod gerçek zamanlı WAV oynatmayı durdurur
+                self.wav_sim = None; // live mode stops real-time WAV playback
                 self.live = Some(cap);
                 self.live_frames_applied = 0;
                 self.live_cached_anchor = None;
                 self.live_pass_front_index = 0;
-                self.last_live_decode = Instant::now() - LIVE_REDECODE_INTERVAL; // hemen tetikle
+                self.last_live_decode = Instant::now() - LIVE_REDECODE_INTERVAL; // trigger immediately
                 let _ = ctx;
             }
             Err(e) => {
-                self.status = format!("Canlı yakalama başlatılamadı: {e}");
+                self.status = format!("Could not start live capture: {e}");
             }
         }
     }
 
-    /// Bir WAV dosyasını, anlık toplu decode yerine, gerçek çalma süresine eşit sürede
-    /// "oynatıyormuş gibi" beslemeye başlar (bkz. `kgstv_modem::PlaybackSim`) — hem tile'ların
-    /// gerçek KG-STV hızında ekrana gelmesi hem göz diyagramının sadece o ana kadar gelen
-    /// sesi gösterebilmesi için.
+    /// Starts feeding a WAV file "as if playing it" over a time equal to its real playback duration,
+    /// instead of an instant batch decode (see `kgstv_modem::PlaybackSim`) — so the tiles appear on
+    /// screen at real KG-STV speed and the eye diagram can show only the audio received
+    /// so far.
     fn start_wav_sim(&mut self, path: PathBuf) {
         match kgstv_modem::load_mono(&path) {
             Ok(audio) => {
                 let name = path.display().to_string();
                 self.status = format!(
-                    "Gerçek zamanlı oynatılıyor: {name} ({:.1} sn)",
+                    "Playing in real time: {name} ({:.1} s)",
                     audio.samples.len() as f64 / audio.sample_rate
                 );
                 self.current_file = Some(name);
                 self.reset_decode_state();
-                self.live = None; // gerçek zamanlı oynatma canlı mikrofon dinlemeyi durdurur
+                self.live = None; // real-time playback stops live microphone listening
                 self.last_anchor = None;
                 self.wav_sim = Some(kgstv_modem::PlaybackSim::start(audio.samples, audio.sample_rate));
                 self.wav_sim_frames_applied = 0;
                 self.wav_sim_cached_anchor = None;
                 self.wav_sim_final_pass_done = false;
-                self.last_wav_sim_decode = Instant::now() - WAV_SIM_REDECODE_INTERVAL; // hemen tetikle
+                self.last_wav_sim_decode = Instant::now() - WAV_SIM_REDECODE_INTERVAL; // trigger immediately
             }
             Err(e) => {
-                self.status = format!("WAV okunamadı: {e}");
+                self.status = format!("Could not read WAV: {e}");
             }
         }
     }
 
-    /// Canlı modda periyodik olarak biriken tamponu yeniden decode etmeyi dener (önceki decode
-    /// bitmişse). `decode_wav_sequential_cb`'nin durum tutan bir API'si olmadığından her pas
-    /// tamponu baştan taramak ZORUNDA, ama bunu `maybe_kick_wav_sim_decode`'daki gibi
-    /// UI'a "sıfırdan başlıyor" gibi göstermeden (görüntü/log silinmeden, sadece önceki
-    /// pas'larda görülmemiş YENİ frame'ler uygulanarak) yapıyoruz — aksi hâlde her ~2sn'de bir
-    /// ekran karardığı/frame sayacı 0'a döndüğü izlenimi veriyordu (kullanıcı geri bildirimi).
+    /// In live mode, periodically tries to re-decode the accumulated buffer (if the previous decode
+    /// has finished). Since `decode_wav_sequential_cb` has no stateful API, every pass MUST
+    /// scan the buffer from the start, but, as in `maybe_kick_wav_sim_decode`, we do this without
+    /// showing the UI a "starting from scratch" (without wiping the image/log, only applying NEW
+    /// frames not seen in previous passes) — otherwise it gave the impression that every ~2 s the
+    /// screen went blank/the frame counter returned to 0 (user feedback).
     ///
-    /// **Tamponun kırpılması:** `LiveCapture`'ın halka tamponu `LIVE_BUFFER_SECONDS` dolunca
-    /// eski örnekleri atmaya başlar (bkz. `LiveCapture::front_absolute_index`) — bu, ondan
-    /// sonra HER pas'ta true kalan bir DURUM (200 sn dolduktan sonra tampon HER ZAMAN "dolu"),
-    /// bir kerelik bir olay DEĞİL. Eskiden bu "tampon dolu mu" (`raw.len() >= kapasite`)
-    /// kontrolüyle algılanıp her seferinde `reset_decode_state()` ile TÜM ekran (görüntü/log/
-    /// anchor) silinip baştan taratılıyordu — 200 sn'den uzun süren bir canlı dinlemede bu, HER
-    /// ~2 saniyede bir SONSUZA DEK tekrarlanan bir "her şeyi yeniden alıyor" görünümüne yol
-    /// açıyordu (kullanıcı geri bildirimi: "ilk seferinde duzgun calisiyor ama sonra ... tekrar
-    /// tum frameleri almaya calisti"). Düzeltme: önbellekteki anchor artık MUTLAK konumda
-    /// tutuluyor (bkz. `live_cached_anchor` dokümantasyonu) — her pas'ta güncel
-    /// `front_absolute_index()` çıkarılarak o anki `snapshot()`'a göre YENİDEN yerelleştiriliyor.
-    /// Anchor'ın işaret ettiği ses GERÇEKTEN atıldıysa (yerel konum negatif çıkarsa) SADECE
-    /// anchor önbelleği temizlenir (taze bir arama tetiklenir) — ekran/görüntü/log ASLA silinmez.
+    /// **Buffer trimming:** `LiveCapture`'s ring buffer starts dropping old samples once
+    /// `LIVE_BUFFER_SECONDS` is full (see `LiveCapture::front_absolute_index`) — this is a STATE that
+    /// stays true on EVERY pass after that (after 200 s the buffer is ALWAYS "full"), NOT a
+    /// one-off event. Previously this was detected by a "is the buffer full" (`raw.len() >= capacity`)
+    /// check, and every time `reset_decode_state()` wiped the WHOLE screen (image/log/
+    /// anchor) and rescanned from the start — in a live listen lasting over 200 s this led to a
+    /// "re-receiving everything" appearance repeating FOREVER every ~2 seconds
+    /// (user feedback: "it works fine the first time but then ... it tried to receive all
+    /// the frames again"). Fix: the cached anchor is now kept as an ABSOLUTE position
+    /// (see the `live_cached_anchor` documentation) — on each pass it is RE-localized relative to the
+    /// current `snapshot()` by subtracting the current `front_absolute_index()`.
+    /// If the audio the anchor points to has REALLY been dropped (local position comes out negative), ONLY
+    /// the anchor cache is cleared (a fresh search is triggered) — the screen/image/log is NEVER wiped.
     fn maybe_kick_live_decode(&mut self, ctx: &egui::Context) {
         let Some(live) = &self.live else { return };
         if self.decoding || self.last_live_decode.elapsed() < LIVE_REDECODE_INTERVAL {
@@ -415,27 +415,27 @@ impl KgstvApp {
         let sample_rate = live.sample_rate;
         let front_index = live.front_absolute_index();
         let raw = live.snapshot();
-        // Güvenlik payı: `maybe_kick_wav_sim_decode` ile aynı gerekçe — artımlı uygulamada
-        // hiçbir frame yeniden ziyaret edilmediğinden, tamponun tam ucundaki kesilmiş bir
-        // frame'i kalıcı olarak yanlış çizme riskini önler.
+        // Safety margin: same rationale as in `maybe_kick_wav_sim_decode` — since in incremental
+        // application no frame is revisited, this avoids the risk of permanently drawing a frame
+        // that is cut off at the very end of the buffer incorrectly.
         let margin = ((0.25 * sample_rate) as usize).min(raw.len());
         let safe_len = raw.len() - margin;
         if safe_len < 4096 {
-            return; // henüz anlamlı bir decode denemesi için yeterli "güvenli" örnek yok
+            return; // not enough "safe" samples yet for a meaningful decode attempt
         }
 
-        // Önbellekteki (MUTLAK) anchor'ı bu pas'ın snapshot'ına göre YEREL konuma çevir.
-        // Anchor'ın işaret ettiği ses tampondan gerçekten atıldıysa (yerel konum < 0), artık
-        // kullanılamaz — SADECE önbelleği temizle (ekranı SİLME: zaten decode edilmiş
-        // frame'ler geçerliliğini korur; bir sonraki pas taze bir arama yapıp varsa YENİ bir
-        // oturumu bulur).
+        // Convert the cached (ABSOLUTE) anchor into a LOCAL position relative to this pass's snapshot.
+        // If the audio the anchor points to has really been dropped from the buffer (local position < 0),
+        // it can no longer be used — ONLY clear the cache (DO NOT WIPE the screen: frames already
+        // decoded remain valid; the next pass does a fresh search and finds a NEW
+        // session if there is one).
         let local_known_anchor = self.live_cached_anchor.and_then(|abs| {
             let local = abs - front_index as f64;
             if local >= 0.0 { Some(local) } else { None }
         });
         if self.live_cached_anchor.is_some() && local_known_anchor.is_none() {
             self.live_cached_anchor = None;
-            self.live_frames_applied = 0; // eski anchor'a göre sayılmış frame sayısı artık anlamsız
+            self.live_frames_applied = 0; // the frame count relative to the old anchor is now meaningless
         }
 
         self.last_live_decode = Instant::now();
@@ -450,27 +450,27 @@ impl KgstvApp {
         let skip = self.live_frames_applied;
         let known_anchor = local_known_anchor;
         std::thread::spawn(move || {
-            run_decode(&ctx1, &tx, "(canlı)".to_string(), sample_rate, samples, skip, known_anchor);
+            run_decode(&ctx1, &tx, "(live)".to_string(), sample_rate, samples, skip, known_anchor);
         });
     }
 
-    /// `maybe_kick_live_decode`'a benzer, ama İKİ önemli farkla — ikisi de kullanıcının
-    /// gördüğü "sürekli başa dönüp yeniden tarıyor" sorununu çözmek için:
+    /// Similar to `maybe_kick_live_decode`, but with TWO important differences — both to solve the
+    /// "it keeps going back to the start and rescanning" problem the user saw:
     ///
-    /// 1. **Durum sıfırlanmaz, artımlı uygulanır**: `decode_wav_sequential_cb`'nin durumu
-    ///    hatırlayan bir API'si olmadığından her pas'ta baştan yürümek ZORUNDA, ama bunu
-    ///    `reset_decode_state()` ile UI'a "her seferinde temiz sayfa" gibi göstermek yerine,
-    ///    önceki pas'larda zaten görülmüş (`wav_sim_frames_applied`) frame'leri `run_decode`'a
-    ///    sessizce atlatıp SADECE yeni frame'leri uyguluyoruz — görüntü/log asla silinmez,
-    ///    sadece büyür.
-    /// 2. **Güvenlik payı**: tamponun en ucuna kadar decode etmek, o an tam ortasında kesilmiş
-    ///    bir frame'i (bozuk bitlerle) yanlış çözüp KALICI olarak ekrana çizme riski taşır
-    ///    (artık her pas'ta silinmediğinden, önceki davranışın aksine bu asla düzelmezdi) —
-    ///    bu yüzden en son ~0.25sn'lik kısmı decode dışında bırakıyoruz.
+    /// 1. **State is not reset, it is applied incrementally**: since `decode_wav_sequential_cb` has
+    ///    no API that remembers state, every pass MUST walk from the start, but instead of
+    ///    showing this to the UI as a "clean page every time" via `reset_decode_state()`, we
+    ///    make `run_decode` silently skip frames already seen in previous passes (`wav_sim_frames_applied`)
+    ///    and apply ONLY the new frames — the image/log is never wiped, it only
+    ///    grows.
+    /// 2. **Safety margin**: decoding right up to the very end of the buffer risks wrongly decoding a
+    ///    frame cut off right in the middle at that moment (with corrupted bits) and PERMANENTLY drawing
+    ///    it on screen (since it is no longer wiped on every pass, unlike the previous behaviour this would
+    ///    never be corrected) — so we leave the last ~0.25 s out of the decode.
     fn maybe_kick_wav_sim_decode(&mut self, ctx: &egui::Context) {
         let Some(sim) = &self.wav_sim else { return };
         if self.wav_sim_final_pass_done {
-            return; // oynatma bitti ve son (tam) pas zaten yapıldı — artık tekrar denemeye gerek yok
+            return; // playback finished and the final (full) pass is already done — no need to try again
         }
         if self.decoding || self.last_wav_sim_decode.elapsed() < WAV_SIM_REDECODE_INTERVAL {
             return;
@@ -478,12 +478,12 @@ impl KgstvApp {
         let sample_rate = sim.sample_rate;
         let raw = sim.snapshot();
         let is_done = sim.is_done();
-        // Oynatma bittiyse artık "hareketli bir hedef" yok — güvenlik payına gerek kalmadan
-        // kalan her şeyi decode edebiliriz.
+        // If playback has finished there is no longer a "moving target" — we can decode
+        // everything remaining without needing a safety margin.
         let safety_margin = if is_done { 0 } else { ((0.25 * sample_rate) as usize).min(raw.len()) };
         let safe_len = raw.len() - safety_margin;
         if safe_len < 4096 {
-            return; // henüz anlamlı bir decode denemesi için yeterli "güvenli" veri yok
+            return; // not enough "safe" data yet for a meaningful decode attempt
         }
         self.last_wav_sim_decode = Instant::now();
         self.wav_sim_final_pass_done = is_done;
@@ -496,31 +496,31 @@ impl KgstvApp {
         let (tx, rx): (Sender<DecodeMsg>, Receiver<DecodeMsg>) = mpsc::channel();
         self.rx = Some(rx);
         let ctx1 = ctx.clone();
-        let label = format!("(gerçek zamanlı, {received_secs:.1}/{total_secs:.1} sn)");
+        let label = format!("(real time, {received_secs:.1}/{total_secs:.1} s)");
         let skip = self.wav_sim_frames_applied;
-        // `PlaybackSim`'in tamponu (canlı mikrofonun aksine) asla eskiyi atmıyor, sadece
-        // büyüyor — bulunan anchor oturum boyunca hep geçerli kalır.
+        // `PlaybackSim`'s buffer (unlike the live microphone's) never drops old data, it only
+        // grows — the anchor found stays valid throughout the session.
         let known_anchor = self.wav_sim_cached_anchor;
         std::thread::spawn(move || {
             run_decode(&ctx1, &tx, label, sample_rate, samples, skip, known_anchor);
         });
     }
 
-    /// Göz diyagramını yeniden hesaplar. **Kritik:** faz katlaması gerçek senkron `anchor`'ına
-    /// göre hizalanmalı — anchor bilinmeden `(t/tb)%1` gibi keyfi bir başlangıçtan katlamak,
-    /// göz diyagramının "orta noktada açık" yapısını rastgele bir faza kaydırıp düz/anlamsız
-    /// bir çizim üretir (gerçek kayıtla doğrulanan bir hataydı — bkz. `docs/protocol_spec.md`).
-    /// Bu yüzden `last_anchor` bilinmeden (henüz decode tamamlanmadan) çizim yapılmaz.
+    /// Recomputes the eye diagram. **Critical:** the phase folding must be aligned to the real sync
+    /// `anchor` — folding from an arbitrary start such as `(t/tb)%1` without knowing the anchor shifts
+    /// the eye diagram's "open at the midpoint" structure to a random phase and produces a flat/meaningless
+    /// plot (this was a bug verified with a real recording — see `docs/protocol_spec.md`).
+    /// So nothing is drawn until `last_anchor` is known (before decoding has completed).
     ///
-    /// **Sinyal seçimi:** `ToneClock::soft_metric_at`'in matched-filter korelasyonu (ilk
-    /// denenen yaklaşım) sembol içinde yumuşak/sinüsvari bir eğri üretiyordu — klasik osiloskop
-    /// göz diyagramının beklenen "düz plato + keskin geçiş" görünümü DEĞİL (kullanıcı geri
-    /// bildirimi ve bir referans görselle doğrulandı). Bunun yerine `kgstv_modem::
-    /// instantaneous_freq` (anlık frekans discriminator'ı) kullanılıyor — sembol içinde frekans
-    /// gerçekten düz kaldığından (CPFSK'nin doğası gereği) ve sadece sembol sınırlarında
-    /// değiştiğinden, bu tam olarak klasik göz diyagramı şeklini üretiyor. Frekans, `±300Hz`
-    /// (MSK'nin nominal sapması) ile [-1,1]'e normalize edilir — 4L-FSK'nin ara seviyeleri
-    /// (1400/1600Hz) de doğal olarak ±0.33'e denk gelir.
+    /// **Signal choice:** the matched-filter correlation of `ToneClock::soft_metric_at` (the first
+    /// approach tried) produced a soft/sinusoidal curve within a symbol — NOT the expected "flat
+    /// plateau + sharp transition" look of a classic oscilloscope eye diagram (verified by user
+    /// feedback and a reference image). Instead `kgstv_modem::
+    /// instantaneous_freq` (instantaneous frequency discriminator) is used — since the frequency
+    /// really stays flat within a symbol (by the nature of CPFSK) and changes only at symbol
+    /// boundaries, this produces exactly the classic eye-diagram shape. The frequency is normalized
+    /// to [-1,1] by `±300Hz` (MSK's nominal deviation) — 4L-FSK's intermediate levels
+    /// (1400/1600Hz) naturally land at ±0.33.
     fn recompute_eye_diagram(&mut self) {
         if self.last_eye_update.elapsed() < EYE_UPDATE_INTERVAL {
             return;
@@ -546,7 +546,7 @@ impl KgstvApp {
         }
         const CENTER_FREQ: f64 = 1500.0;
         const LP_CUTOFF: f64 = 500.0;
-        const DEVIATION: f64 = 300.0; // MSK'nin nominal sapması — normalizasyon ölçeği
+        const DEVIATION: f64 = 300.0; // MSK's nominal deviation — normalization scale
         let freq = kgstv_modem::instantaneous_freq(&filtered, sr, CENTER_FREQ, LP_CUTOFF);
 
         let mut points = Vec::with_capacity(freq.len());
@@ -557,12 +557,12 @@ impl KgstvApp {
             points.push((phase, m));
         }
 
-        // Otomatik ortalama: `anchor`'da MSK'nin kendi (incoherent) bit kararı için önemsiz
-        // ama göz diyagramının fazını kaydırabilen küçük bir sistematik ofset olabilir
-        // (kullanıcı geri bildirimi: "eye diyagram ... tam ortalanmamış sağlı sollu"). Gözün
-        // en AÇIK (frekansın en durağan/en düşük varyanslı) noktasını bulup onu faz=0.5'e
-        // hizalayarak diyagram, anchor'daki küçük hatalardan bağımsız her zaman ortalanmış
-        // görünüyor.
+        // Automatic centring: at `anchor` there may be a small systematic offset that is irrelevant
+        // to MSK's own (incoherent) bit decision but can shift the eye diagram's phase
+        // (user feedback: "the eye diagram ... is not exactly centred, it's off to the right and left").
+        // By finding the eye's most OPEN point (where the frequency is most stable/has the lowest variance)
+        // and aligning it to phase=0.5, the diagram always looks centred regardless of small errors
+        // in the anchor.
         if !points.is_empty() {
             const N_BINS: usize = 24;
             let mut sum = [0.0f64; N_BINS];
@@ -609,28 +609,28 @@ impl KgstvApp {
                 self.tx_image_rgba = resized.to_rgba8().into_raw();
                 self.tx_texture_dirty = true;
                 self.tx_source_name = Some(name);
-                self.tx_audio = None; // eski görüntüyle üretilmiş ses artık geçersiz
-                self.tx_status = "Resim yüklendi — göndermeye hazır.".to_string();
+                self.tx_audio = None; // audio generated with the old image is no longer valid
+                self.tx_status = "Image loaded — ready to send.".to_string();
             }
             Err(e) => {
-                self.tx_status = format!("Resim açılamadı: {e}");
+                self.tx_status = format!("Could not open image: {e}");
             }
         }
     }
 
-    /// 300 tile'ı (+ isteğe bağlı çağrı işareti/metin frame'i) kodlayıp MSK sesine çevirir.
-    /// `include_image`: `false` iken 300 görüntü tile'ı hiç eklenmez — sadece çağrı işareti
-    /// (varsa) + metin gönderilir (kullanıcı isteği: "text kutusunun yanindaki gonder text i
-    /// gondermeli sadece" — Mesaj kutusunun yanındaki "📨 Gönder" kısayolu için, resmi
-    /// kodlamadan hızlıca sadece metin göndersin diye).
+    /// Encodes the 300 tiles (+ optional callsign/text frame) and converts them into MSK audio.
+    /// `include_image`: when `false`, the 300 image tiles are not added at all — only the callsign
+    /// (if any) + text are sent (user request: "the send next to the text box should send only
+    /// the text" — for the "📨 Send" shortcut next to the Message box, so it quickly sends only the
+    /// text without encoding the image).
     fn start_tx_encode(&mut self, ctx: &egui::Context, include_image: bool) {
         self.tx_encoding = true;
         self.tx_progress = (0, 0);
-        self.tx_status = "Kodlanıyor...".to_string();
+        self.tx_status = "Encoding...".to_string();
         let rgba = self.tx_image_rgba.clone();
         let callsign = self.tx_callsign.clone();
         let message = self.tx_message.clone();
-        let quality = self.tx_quality.min(15); // sc 4-bit alan: 0-15, tam TX_SCALE_LABELS aralığı
+        let quality = self.tx_quality.min(15); // sc is a 4-bit field: 0-15, the full TX_SCALE_LABELS range
         let conv = self.tx_conv;
         let fsk4 = self.tx_fsk4;
         let modulation = fsk4 as u8;
@@ -692,8 +692,8 @@ impl KgstvApp {
                 }
             }
 
-            // Her frame'in kümülatif bitiş örnek konumunu topla — çalma sırasında "şu ana kadar
-            // hangi tile'lar gönderildi"yi hesaplamak için (bkz. `TxMsg::Done` dokümantasyonu).
+            // Collect each frame's cumulative end sample position — for computing "which tiles have
+            // been sent so far" during playback (see the `TxMsg::Done` documentation).
             let cum_positions = Arc::new(Mutex::new(Vec::with_capacity(frames.len())));
             let cum_positions_cb = cum_positions.clone();
             let tx2 = tx.clone();
@@ -724,8 +724,8 @@ impl KgstvApp {
             return;
         };
         match kgstv_modem::save_mono(&path, sr.round() as u32, samples) {
-            Ok(()) => self.tx_status = format!("Kaydedildi: {}", path.display()),
-            Err(e) => self.tx_status = format!("WAV kaydedilemedi: {e}"),
+            Ok(()) => self.tx_status = format!("Saved: {}", path.display()),
+            Err(e) => self.tx_status = format!("Could not save WAV: {e}"),
         }
     }
 
@@ -735,7 +735,7 @@ impl KgstvApp {
             return;
         }
         self.tx_playing = true;
-        self.tx_status = "Çalınıyor...".to_string();
+        self.tx_status = "Playing...".to_string();
         self.tx_play_started = Some(Instant::now());
         let stop = Arc::new(AtomicBool::new(false));
         self.tx_play_stop = Some(stop.clone());
@@ -754,21 +754,21 @@ impl KgstvApp {
         });
     }
 
-    /// Devam eden "Çal" adımını erken keser (bkz. `play_tx`/`tx_play_stop` — kullanıcı isteği).
-    /// Gerçek durum değişikliği (`tx_playing = false`) arka plan thread'i döndüğünde
-    /// `drain_tx_messages`'ta `TxMsg::PlaybackDone` ile gelir — burada sadece bayrak set edilir.
+    /// Cuts off an ongoing "Play" step early (see `play_tx`/`tx_play_stop` — user request).
+    /// The actual state change (`tx_playing = false`) arrives via `TxMsg::PlaybackDone` in
+    /// `drain_tx_messages` when the background thread returns — only the flag is set here.
     fn stop_tx_playback(&mut self) {
         if let Some(stop) = &self.tx_play_stop {
             stop.store(true, Ordering::Relaxed);
-            self.tx_status = "Durduruluyor...".to_string();
+            self.tx_status = "Stopping...".to_string();
         }
     }
 
-    /// Çalma başladığından beri geçen SÜREYE göre (örnek-hassas takip yerine — `play_blocking`
-    /// cihaz gerektirdiğinde yeniden örnekleme yapabildiğinden gerçek örnek sayısı birebir
-    /// eşleşmeyebilir, ama süre eşleşir), TX önizlemesinde şu ana kadar GÖNDERİLMİŞ tile'ların
-    /// (x,y) kümesini döner — sadece ÇALARKEN anlamlı, aksi hâlde boş küme (kullanıcı isteği:
-    /// "resimde gonderilen kismi isaretlesek").
+    /// Based on the TIME elapsed since playback started (instead of sample-precise tracking — since
+    /// `play_blocking` may resample when the device requires it, the real sample count may not match
+    /// exactly, but the duration does), returns the set of (x,y) tiles SENT so far in the TX
+    /// preview — only meaningful WHILE PLAYING, otherwise an empty set (user request:
+    /// "let's mark the sent part on the picture").
     fn tx_tiles_sent_so_far(&self) -> HashSet<(u8, u8)> {
         let mut out = HashSet::new();
         if !self.tx_playing {
@@ -788,27 +788,27 @@ impl KgstvApp {
 
     fn drain_tx_messages(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.tx_rx else { return };
-        // "📨 Gönder" butonu: kodlama bitince çalmayı da otomatik başlatmak için — `self.tx_rx`
-        // ödünç alınmışken `&mut self` gerektiren `play_tx`'i doğrudan çağıramayız (borrow
-        // checker), bu yüzden bayrağı SADECE burada topluyoruz, döngü bitince (ödünç serbest
-        // kalınca) aşağıda uyguluyoruz.
+        // "📨 Send" button: to automatically start playback once encoding finishes — while `self.tx_rx`
+        // is borrowed we cannot directly call `play_tx`, which needs `&mut self` (borrow
+        // checker), so we ONLY collect the flag here and apply it below once the loop ends (once
+        // the borrow is released).
         let mut should_auto_play = false;
         loop {
             let msg = match rx.try_recv() {
                 Ok(msg) => msg,
                 Err(TryRecvError::Empty) => break,
-                // Kritik düzeltme (kullanıcı geri bildirimi: "gonderiyor amaa bazen de
-                // gondermiyom, yeniden yeniden denedigim de gonderebiliyorum"): arka plan
-                // kodlama/çalma thread'i (ör. beklenmedik bir ses cihazı hatasıyla) PANİK
-                // yiyip hiçbir son mesaj göndermeden ölürse, kanal "Disconnected" olur —
-                // eskiden bu durum `Empty` ile AYNI şekilde (sessizce döngüden çıkarak)
-                // ele alınıyordu, yani `tx_encoding`/`tx_playing` SONSUZA DEK `true` kalıp
-                // "Kodlanıyor.../Çalınıyor..." ekranda takılı kalıyor, "📨 Gönder"/"🔊 Çal"
-                // butonları kalıcı olarak devre dışı kalıyordu (kullanıcı bunu fark
-                // etmeden tekrar tekrar deneyip, muhtemelen arada uygulamayı yeniden
-                // başlatana kadar "göndermiyor" gibi görünüyordu). Artık bağlantı kopunca
-                // hâlâ meşgul görünen durum bayrakları HEMEN sıfırlanıp bir hata mesajı
-                // gösteriliyor — kullanıcı arayüzü yeniden başlatmadan tekrar deneyebilir.
+                // Critical fix (user feedback: "it sends but sometimes it
+                // doesn't send, when I try again and again I can send"): if the background
+                // encode/play thread PANICS (e.g. due to an unexpected audio device error)
+                // and dies without sending a final message, the channel becomes "Disconnected" —
+                // previously this case was handled the SAME way as `Empty` (silently leaving
+                // the loop), i.e. `tx_encoding`/`tx_playing` stayed `true` FOREVER and
+                // "Encoding.../Playing..." stayed stuck on screen, with the "📨 Send"/"🔊 Play"
+                // buttons permanently disabled (the user, without noticing this,
+                // kept retrying, and it seemed "not to send" until the application was
+                // probably restarted at some point). Now when the connection drops,
+                // the state flags that still look busy are reset IMMEDIATELY and an error message
+                // is shown — the user can retry without restarting the interface.
                 Err(TryRecvError::Disconnected) => {
                     if self.tx_encoding || self.tx_playing {
                         self.tx_encoding = false;
@@ -817,7 +817,7 @@ impl KgstvApp {
                         self.tx_play_stop = None;
                         self.tx_auto_play_after_encode = false;
                         self.tx_status =
-                            "Hata: arka plan işlemi beklenmedik şekilde durdu (tekrar deneyebilirsin).".to_string();
+                            "Error: background task stopped unexpectedly (you can try again).".to_string();
                     }
                     break;
                 }
@@ -825,18 +825,18 @@ impl KgstvApp {
             match msg {
                 TxMsg::Progress { done, total } => {
                     self.tx_progress = (done, total);
-                    self.tx_status = format!("Kodlanıyor... {done}/{total} frame");
+                    self.tx_status = format!("Encoding... {done}/{total} frames");
                 }
                 TxMsg::Done { sample_rate, samples, frame_bounds } => {
                     self.tx_encoding = false;
                     self.tx_status = format!(
-                        "Hazır — {:.1} sn ses ({} örnek @ {sample_rate:.0} Hz)",
+                        "Ready — {:.1} s of audio ({} samples @ {sample_rate:.0} Hz)",
                         samples.len() as f64 / sample_rate,
                         samples.len()
                     );
                     self.last_audio = Some((sample_rate, samples.clone()));
-                    // Kendi ürettiğimiz TX sesi her zaman preamble'la örnek 0'da başlıyor
-                    // (bkz. encode_session_audio_cb) — anchor=0.0 tam olarak doğru.
+                    // The TX audio we generate ourselves always starts with the preamble at sample 0
+                    // (see encode_session_audio_cb) — anchor=0.0 is exactly right.
                     self.last_anchor = Some(0.0);
                     self.tx_audio = Some((sample_rate, samples));
                     self.tx_frame_bounds = frame_bounds;
@@ -848,12 +848,12 @@ impl KgstvApp {
                 TxMsg::PlaybackDone => {
                     self.tx_playing = false;
                     self.tx_play_started = None;
-                    // Kullanıcı "Durdur"a bastıysa `play_blocking` de erken `Ok(())` ile döner
-                    // (bkz. o fonksiyonun dokümantasyonu) — bayrağa bakıp doğru mesajı göster.
+                    // If the user pressed "Stop", `play_blocking` also returns early with `Ok(())`
+                    // (see that function's documentation) — check the flag and show the right message.
                     let stopped_by_user =
                         self.tx_play_stop.as_ref().is_some_and(|s| s.load(Ordering::Relaxed));
                     self.tx_status =
-                        if stopped_by_user { "Çalma durduruldu.".to_string() } else { "Çalma tamamlandı.".to_string() };
+                        if stopped_by_user { "Playback stopped.".to_string() } else { "Playback finished.".to_string() };
                     self.tx_play_stop = None;
                 }
                 TxMsg::PlaybackError(e) => {
@@ -861,7 +861,7 @@ impl KgstvApp {
                     self.tx_play_started = None;
                     self.tx_play_stop = None;
                     self.tx_auto_play_after_encode = false;
-                    self.tx_status = format!("Çalma hatası: {e}");
+                    self.tx_status = format!("Playback error: {e}");
                 }
             }
         }
@@ -876,13 +876,13 @@ impl KgstvApp {
             let msg = match rx.try_recv() {
                 Ok(msg) => msg,
                 Err(TryRecvError::Empty) => break,
-                // Bkz. `drain_tx_messages`'taki aynı düzeltmenin dokümantasyonu — decode
-                // thread'i son bir mesaj göndermeden ölürse (panik vb.), `self.decoding`
-                // sonsuza dek `true` kalıp arayüzü kilitli göstermesin diye.
+                // See the documentation of the same fix in `drain_tx_messages` — so that if the decode
+                // thread dies without sending a final message (panic etc.), `self.decoding`
+                // does not stay `true` forever and show the interface as locked.
                 Err(TryRecvError::Disconnected) => {
                     if self.decoding {
                         self.decoding = false;
-                        self.status = "Hata: decode işlemi beklenmedik şekilde durdu (tekrar deneyebilirsin).".to_string();
+                        self.status = "Error: decode task stopped unexpectedly (you can try again).".to_string();
                     }
                     break;
                 }
@@ -893,7 +893,7 @@ impl KgstvApp {
                 }
                 DecodeMsg::Started { label, sample_rate, n_samples } => {
                     self.status = format!(
-                        "{label} decode ediliyor: {n_samples} örnek @ {sample_rate:.0} Hz ({:.1} sn)",
+                        "{label} decoding: {n_samples} samples @ {sample_rate:.0} Hz ({:.1} s)",
                         n_samples as f64 / sample_rate
                     );
                 }
@@ -909,21 +909,21 @@ impl KgstvApp {
                     if self.log_lines.len() > MAX_LOG_LINES {
                         self.log_lines.remove(0);
                     }
-                    // Log satırı sadece frame metadatasını (x/y/sc/boyut) gösteriyor — çağrı
-                    // işareti/metin frame'lerinin GERÇEK içeriğini (ham metnini) ayrıca decode
-                    // edip hem log'a hem üstteki belirgin özet alanına yazıyoruz (aksi hâlde
-                    // "Some(Callsign)" görünüp içerik hiç ortaya çıkmıyordu — kullanıcı geri
-                    // bildirimi: "cagri isaretini cozemiyor").
+                    // The log line shows only the frame metadata (x/y/sc/size) — we additionally decode
+                    // the REAL content (raw text) of callsign/text frames and write it both to the log
+                    // and to the prominent summary area at the top (otherwise "Some(Callsign)"
+                    // was shown and the content never appeared — user
+                    // feedback: "it can't decode the callsign").
                     if fr.data_crc_ok {
                         if let Some(data_bits) = &fr.data_bits {
                             let text = bits_to_ascii(data_bits);
                             match cmd {
                                 Some(Command::Callsign) => {
-                                    self.log_lines.push(format!("      → ÇAĞRI İŞARETİ: {text}"));
+                                    self.log_lines.push(format!("      → CALLSIGN: {text}"));
                                     self.last_callsign = Some(text);
                                 }
                                 Some(Command::Text) => {
-                                    self.log_lines.push(format!("      → METİN: {text}"));
+                                    self.log_lines.push(format!("      → TEXT: {text}"));
                                     self.last_text = Some(text);
                                 }
                                 _ => {}
@@ -958,59 +958,59 @@ impl KgstvApp {
                 DecodeMsg::Done { anchor, frames_this_pass } => {
                     self.decoding = false;
                     self.last_anchor = Some(anchor);
-                    // Anchor'ı SADECE bu geçiş gerçekten en az bir frame bulduysa önbelleğe al
-                    // (yani gerçek bir senkron kilidiydi) — aksi hâlde `find_sync`'in "en iyi
-                    // eldeki" (ama aslında GEÇERSİZ/gürültü) sonucunu önbelleğe alıp sonsuza
-                    // dek yeniden kullanmış oluruz, bu da GERÇEK bir sinyal gelse bile asla
-                    // senkronlanamamaya yol açar (kullanıcı geri bildirimiyle bulunan bir
-                    // hataydı: "cagri isareti cozmedi ... goruntu hic cozumlemedi"). 0 ise
-                    // önbellek temizlenir ki bir sonraki pas taze bir arama yapsın.
+                    // Cache the anchor ONLY if this pass actually found at least one frame
+                    // (i.e. it was a real sync lock) — otherwise we would cache `find_sync`'s "best
+                    // available" (but actually INVALID/noise) result and reuse it forever,
+                    // which would mean never being able to sync even when a REAL signal
+                    // arrives (this was a bug found via user feedback:
+                    // "it didn't decode the callsign ... the image never decoded"). If 0,
+                    // the cache is cleared so the next pass does a fresh search.
                     if self.wav_sim.is_some() {
-                        // Bir sonraki pas bu kadarını sessizce atlayıp sadece yeni frame'leri
-                        // uygulasın (bkz. `maybe_kick_wav_sim_decode`).
+                        // Let the next pass silently skip this many and apply only the new frames
+                        // (see `maybe_kick_wav_sim_decode`).
                         self.wav_sim_frames_applied = self.frames_total;
                         self.wav_sim_cached_anchor = if frames_this_pass > 0 { Some(anchor) } else { None };
                     } else if self.live.is_some() {
                         self.live_frames_applied = self.frames_total;
-                        // `anchor`, bu pas'ın snapshot'ına göre YEREL — önbellekte MUTLAK
-                        // konumda tutuluyor (bkz. `live_cached_anchor` dokümantasyonu), o
-                        // yüzden bu pas'ın snapshot'ı alınırken geçerli olan
-                        // `live_pass_front_index` eklenerek MUTLAK'a çevrilir.
+                        // `anchor` is LOCAL relative to this pass's snapshot — in the cache it is kept as an
+                        // ABSOLUTE position (see the `live_cached_anchor` documentation), so
+                        // it is converted to ABSOLUTE by adding the `live_pass_front_index` that was
+                        // current when this pass's snapshot was taken.
                         self.live_cached_anchor =
                             if frames_this_pass > 0 { Some(anchor + self.live_pass_front_index as f64) } else { None };
                     }
                     self.status = format!(
-                        "Tamamlandı — senkron anchor={anchor:.1} örnek, {} frame, tile: {}/{}",
+                        "Done — sync anchor={anchor:.1} samples, {} frames, tiles: {}/{}",
                         self.frames_total, self.tiles_ok, self.tiles_total
                     );
                 }
                 DecodeMsg::Error(e) => {
                     self.decoding = false;
-                    self.status = format!("Hata: {e}");
+                    self.status = format!("Error: {e}");
                 }
             }
         }
     }
 }
 
-/// Ortak decode çalıştırıcısı: dosya modu, canlı mod ve gerçek-zamanlı WAV oynatma simülasyonu
-/// tarafından, zaten arka planda çalışan bir thread içinden çağrılır. Senkron bulur, frame
-/// frame yürür, her frame'i `tx` üzerinden UI thread'ine bildirir.
+/// Common decode runner: called by file mode, live mode and the real-time WAV playback simulation,
+/// from within a thread already running in the background. Finds sync, walks frame by
+/// frame, and reports each frame to the UI thread via `tx`.
 ///
-/// `skip_frames`: yürüyüşün baştan `skip_frames` kadarını (zaten önceki bir pas'ta UI'a
-/// uygulanmış) SESSİZCE atlar, sadece YENİ frame'leri bildirir. Gerçek-zamanlı WAV oynatma
-/// simülasyonu için — tampon her pas'ta büyüdüğünden yine baştan yürümek zorunda (durum tutan
-/// bir API yok), ama bunu UI'a her seferinde "en baştan" gibi göstermek (görüntü/log'u
-/// sıfırlayıp yeniden doldurmak) kullanıcıya sanki her pas'ta "başa dönüp yeniden tarıyormuş"
-/// gibi görünür. Dosya modunda `skip_frames=0`.
+/// `skip_frames`: SILENTLY skips the first `skip_frames` of the walk (already applied to the UI in a
+/// previous pass), reporting only NEW frames. For the real-time WAV playback
+/// simulation — since the buffer grows on every pass it still has to walk from the start (there is no
+/// stateful API), but showing this to the UI as "from the very start" each time (resetting and
+/// refilling the image/log) looks to the user as if every pass "goes back to the start and rescans".
+/// In file mode `skip_frames=0`.
 ///
-/// `known_anchor`: verilirse senkron ARAMASI tamamen atlanır, doğrudan bu anchor kullanılır.
-/// Büyüyen bir tamponu tekrar tekrar decode eden çağıranlar (canlı mikrofon/gerçek-zamanlı WAV
-/// oynatma) için KRİTİK — her pas'ta yeniden arama yapmak, arama aralığı tamponla birlikte
-/// değiştiğinden pas'tan pas'a birkaç örnek farklı bir anchor bulabiliyordu, bu da `skip_frames`
-/// ile eşleştirilmiş "önceden decode edilmiş" frame varsayımını bozup tüm yürüyüşün erken
-/// durmasına yol açıyordu (bkz. `kgstv_modem::decode_wav_sequential_cb_from_anchor`
-/// dokümantasyonu — kullanıcı geri bildirimiyle bulunan bir hataydı).
+/// `known_anchor`: if given, the sync SEARCH is skipped entirely and this anchor is used directly.
+/// CRITICAL for callers that repeatedly decode a growing buffer (live microphone/real-time WAV
+/// playback) — re-searching on every pass could find an anchor a few samples different from pass to
+/// pass, since the search range changes with the buffer, which broke the "previously decoded" frame
+/// assumption matched with `skip_frames` and made the whole walk stop
+/// early (see the `kgstv_modem::decode_wav_sequential_cb_from_anchor`
+/// documentation — this was a bug found via user feedback).
 fn run_decode(
     ctx: &egui::Context,
     tx: &Sender<DecodeMsg>,
@@ -1025,8 +1025,8 @@ fn run_decode(
 
     let tx2 = tx.clone();
     let ctx2 = ctx.clone();
-    // `Arc<AtomicUsize>` (basit `let mut seen` DEĞİL): closure `decode_wav_sequential_cb*`'ye
-    // TAŞINDIĞI için, çağrıdan sonra son sayıyı okuyabilmemiz lazım — paylaşımlı bir sayaç şart.
+    // `Arc<AtomicUsize>` (NOT a simple `let mut seen`): since the closure is MOVED into
+    // `decode_wav_sequential_cb*`, we need to be able to read the final count after the call — a shared counter is required.
     let seen = Arc::new(AtomicUsize::new(0));
     let seen_cb = seen.clone();
     let frame_cb = move |fr| {
@@ -1041,8 +1041,8 @@ fn run_decode(
         kgstv_modem::decode_wav_sequential_cb_from_anchor(&samples, sample_rate, a, 5000, frame_cb);
         a
     } else {
-        // Senkronun kayıt cihazı başlatma gecikmesi/sessizlik yüzünden ilk saniyelerde
-        // olmayabileceğini göz önünde bulundurarak ilk 15 saniyeyi tara.
+        // Scan the first 15 seconds, bearing in mind that the sync may not be in the first seconds
+        // due to the recorder's start-up delay/silence.
         let coarse_search_len = ((15.0 * sample_rate) as i64).min(samples.len() as i64);
         kgstv_modem::decode_wav_sequential_cb(&samples, sample_rate, coarse_search_len, 5000, frame_cb)
     };
@@ -1051,7 +1051,7 @@ fn run_decode(
     ctx.request_repaint();
 }
 
-/// ASCII metni MSB-first bit dizisine çevirir (çağrı işareti/metin frame'leri için).
+/// Converts ASCII text into an MSB-first bit sequence (for callsign/text frames).
 fn ascii_to_bits(s: &str) -> Vec<u8> {
     let mut bits = Vec::with_capacity(s.len() * 8);
     for &b in s.as_bytes() {
@@ -1062,9 +1062,9 @@ fn ascii_to_bits(s: &str) -> Vec<u8> {
     bits
 }
 
-/// MSB-first bit dizisini ASCII metne çevirir (`ascii_to_bits`'in tersi) — çağrı işareti/metin
-/// frame'lerinin ham verisini okunabilir hâle getirmek için. Yazdırılamayan baytlar `.` ile
-/// gösterilir (Shift-JIS gibi çok baytlı kodlamalar olası ama şimdilik düz ASCII varsayılıyor).
+/// Converts an MSB-first bit sequence into ASCII text (inverse of `ascii_to_bits`) — to make the
+/// raw data of callsign/text frames readable. Non-printable bytes are shown as `.`
+/// (multi-byte encodings such as Shift-JIS are possible, but plain ASCII is assumed for now).
 fn bits_to_ascii(bits: &[u8]) -> String {
     bits.chunks(8)
         .filter(|c| c.len() == 8)
@@ -1079,8 +1079,8 @@ fn bits_to_ascii(bits: &[u8]) -> String {
         .collect()
 }
 
-/// `rgba` (320×240 RGBA8, satır-major) içinden `(tx,ty)` tile indeksindeki 16×16 RGB bloğunu
-/// çıkarır (TX tarafı — `kgstv_core::rgb_to_tile`'a beslenmek üzere).
+/// Extracts the 16×16 RGB block at tile index `(tx,ty)` from `rgba` (320×240 RGBA8, row-major)
+/// (TX side — to be fed to `kgstv_core::rgb_to_tile`).
 fn extract_tile_rgb(rgba: &[u8], tx: usize, ty: usize) -> [[[u8; 3]; TILE]; TILE] {
     let mut out = [[[0u8; 3]; TILE]; TILE];
     for dy in 0..TILE {
@@ -1094,23 +1094,23 @@ fn extract_tile_rgb(rgba: &[u8], tx: usize, ty: usize) -> [[[u8; 3]; TILE]; TILE
     out
 }
 
-/// 320×240 KG-STV görüntüsünü mevcut panel alanına (`available`) sığdıracak ölçeği hesaplar
-/// — sabit 2.0 ölçek, pencere varsayılan boyutunda görüntünün alttan kırpılıp kullanıcının
-/// pencereyi elle büyütmesini gerektiriyordu (kullanıcı geri bildirimi: "resim ekraninin
-/// yuksekligine gore etrafindaki cerceveyi ayarla, tam gormek icin ekrani buyutmem
-/// gerekiyor"). En-boy oranını koruyarak hem yükseklik hem genişliğe sığacak en büyük ölçeği
-/// seçer; çok küçük panellerde okunaksız olmasın diye 1.0'ın altına inmez, çok büyük
-/// pencerelerde de gereksiz devasa görünmesin diye 2.5'i geçmez.
+/// Computes the scale that fits the 320×240 KG-STV image into the available panel area (`available`)
+/// — a fixed 2.0 scale cropped the image at the bottom at the default window size and forced the user
+/// to enlarge the window by hand (user feedback: "adjust the frame around the picture to the
+/// screen height, I have to enlarge the window to see it fully"). Chooses the largest scale that
+/// fits both height and width while preserving the aspect ratio; it does not go below 1.0 so it
+/// stays legible in very small panels, and does not exceed 2.5 so it does not look needlessly huge
+/// in very large windows.
 fn image_fit_scale(available: egui::Vec2) -> f32 {
     let by_h = available.y / IMG_H as f32;
     let by_w = available.x / IMG_W as f32;
     by_h.min(by_w).clamp(1.0, 2.5)
 }
 
-/// Basit "LED" tarzı VU metresi: yatay bir çubuk, `level`'e (yaklaşık 0.0-1.2, tepe genlik)
-/// göre yeşilden kırmızıya yanan segmentlerden oluşur — klasik ses ekipmanı seviye göstergesi
-/// görünümü. `LiveCapture::level()`'i periyodik okuyarak (canlı yakalama sırasında UI zaten
-/// düzenli yeniden çiziliyor) güncellenir.
+/// Simple "LED"-style VU meter: a horizontal bar made of segments that light up from green to red
+/// according to `level` (roughly 0.0-1.2, peak amplitude) — the classic audio-equipment level meter
+/// look. Updated by periodically reading `LiveCapture::level()` (the UI is already redrawn
+/// regularly during live capture).
 fn paint_vu_meter(ui: &mut egui::Ui, level: f32) {
     const N_SEGMENTS: usize = 20;
     let (rect, _resp) =
@@ -1126,7 +1126,7 @@ fn paint_vu_meter(ui: &mut egui::Ui, level: f32) {
         let seg_rect =
             egui::Rect::from_min_size(egui::pos2(x0, rect.top() + 2.0), egui::vec2(seg_w, rect.height() - 4.0));
         let on = i < lit;
-        // Alt ~%65 yeşil, sonraki ~%20 sarı, üst ~%15 kırmızı — klasik VU metre eşikleri.
+        // Bottom ~65% green, next ~20% yellow, top ~15% red — classic VU meter thresholds.
         let color = if i >= N_SEGMENTS - 3 {
             if on { egui::Color32::from_rgb(220, 40, 40) } else { egui::Color32::from_rgb(60, 20, 20) }
         } else if i >= N_SEGMENTS - 7 {
@@ -1140,22 +1140,22 @@ fn paint_vu_meter(ui: &mut egui::Ui, level: f32) {
     }
 }
 
-/// Göz diyagramını (`points`: (faz∈[0,1], yumuşak metrik∈[-1,1])) verilen dikdörtgen içine
-/// çizer. Ardışık noktalar aynı "iz" (trace) içinde birleştirilir; faz sarmalandığında
-/// (1.0'dan 0.0'a döndüğünde) yeni bir iz başlatılır — klasik üst üste binen çizgiler
-/// görünümü için.
+/// Draws the eye diagram (`points`: (phase∈[0,1], soft metric∈[-1,1])) inside the given rectangle.
+/// Consecutive points are joined within the same "trace"; when the phase wraps
+/// (goes back from 1.0 to 0.0) a new trace is started — for the classic overlapping lines
+/// look.
 fn paint_eye_diagram(ui: &mut egui::Ui, rect: egui::Rect, points: &[(f32, f32)]) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 2.0, egui::Color32::from_gray(18));
 
     let to_screen = |phase: f32, m: f32| -> egui::Pos2 {
         let x = rect.left() + phase * rect.width();
-        // m: -1..1 -> y: alt..üst (m=+1 yukarıda)
+        // m: -1..1 -> y: bottom..top (m=+1 at the top)
         let y = rect.center().y - (m * 0.45) * rect.height();
         egui::pos2(x, y)
     };
 
-    // Izgara: -1, 0, +1 seviyeleri.
+    // Grid: -1, 0, +1 levels.
     for &m in &[-1.0f32, 0.0, 1.0] {
         let y = to_screen(0.0, m).y;
         painter.hline(rect.x_range(), y, egui::Stroke::new(1.0, egui::Color32::from_gray(50)));
@@ -1179,19 +1179,19 @@ fn paint_eye_diagram(ui: &mut egui::Ui, rect: egui::Rect, points: &[(f32, f32)])
         painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
-            "(ses yok)",
+            "(no audio)",
             egui::FontId::proportional(14.0),
             egui::Color32::from_gray(90),
         );
         return;
     }
 
-    // DÜŞÜK alfa kritik: osiloskop "fosfor kalıcılığı" görünümü, YÜZLERCE üst üste binen ize
-    // dayanır — her iz görece SAYDAM olmalı ki yoğunluk kademeli birikip net bir gradyan
-    // oluştursun (sık üst üste binen düz platolar parlak/opak, seyrek geçiş/kesişim bölgeleri
-    // soluk kalsın). Yüksek bir alfa (ör. %43) birkaç izden sonra her yeri opak yeşile
-    // doyurup TÜM yoğunluk bilgisini (dolayısıyla kesişim noktalarını) yok ediyordu — kullanıcı
-    // geri bildirimiyle bulunan asıl sorun buydu.
+    // LOW alpha is critical: the oscilloscope "phosphor persistence" look relies on HUNDREDS of
+    // overlapping traces — each trace must be relatively TRANSPARENT so the density builds up gradually
+    // into a clear gradient (frequently overlapping flat plateaus bright/opaque, sparse transition/crossing
+    // regions faint). A high alpha (e.g. 43%) saturated everything to opaque green after a few traces,
+    // destroying ALL the density information (and hence the crossing points) — this was the real
+    // problem found via user feedback.
     let stroke = egui::Stroke::new(1.2, egui::Color32::from_rgba_unmultiplied(80, 220, 120, 20));
     let mut trace: Vec<egui::Pos2> = Vec::new();
     let mut last_phase = -1.0f32;
@@ -1220,8 +1220,7 @@ impl eframe::App for KgstvApp {
         self.maybe_kick_wav_sim_decode(&ctx);
         self.recompute_eye_diagram();
         if self.live.is_some() || self.wav_sim.is_some() || self.tx_encoding || self.tx_playing {
-            // Canlı/gerçek-zamanlı-oynatma/kodlama/çalma sırasında düzenli aralıklarla yeniden
-            // çizim tetikle.
+            // Trigger regular redraws during live/real-time playback/encoding/playing.
             ctx.request_repaint_after(Duration::from_millis(150));
         }
 
@@ -1258,10 +1257,10 @@ impl eframe::App for KgstvApp {
 
         egui::Panel::top("top").show(ui, |ui| {
             ui.horizontal(|ui| {
-                if ui.selectable_label(self.mode == Mode::Rx, "📡 RX (Al)").clicked() {
+                if ui.selectable_label(self.mode == Mode::Rx, "📡 RX (Receive)").clicked() {
                     self.mode = Mode::Rx;
                 }
-                if ui.selectable_label(self.mode == Mode::Tx, "📤 TX (Gönder)").clicked() {
+                if ui.selectable_label(self.mode == Mode::Tx, "📤 TX (Send)").clicked() {
                     self.mode = Mode::Tx;
                 }
                 ui.separator();
@@ -1269,18 +1268,18 @@ impl eframe::App for KgstvApp {
                 match self.mode {
                     Mode::Rx => {
                         let busy = !self.decoding && self.live.is_none() && self.wav_sim.is_none();
-                        if ui.add_enabled(busy, egui::Button::new("📂 WAV Aç...")).clicked() {
+                        if ui.add_enabled(busy, egui::Button::new("📂 Open WAV...")).clicked() {
                             if let Some(path) = rfd::FileDialog::new().add_filter("WAV", &["wav"]).pick_file() {
                                 self.open_file(&ctx, path);
                             }
                         }
                         if self.wav_sim.is_some() {
-                            if ui.button("⏹ Gerçek Zamanlı Durdur").clicked() {
+                            if ui.button("⏹ Stop Real-Time").clicked() {
                                 self.wav_sim = None;
-                                self.status = "Gerçek zamanlı oynatma durduruldu.".to_string();
+                                self.status = "Real-time playback stopped.".to_string();
                             }
                         } else if ui
-                            .add_enabled(!self.decoding && self.live.is_none(), egui::Button::new("🐢 Gerçek Zamanlı Oynat"))
+                            .add_enabled(!self.decoding && self.live.is_none(), egui::Button::new("🐢 Play in Real Time"))
                             .clicked()
                         {
                             if let Some(path) = rfd::FileDialog::new().add_filter("WAV", &["wav"]).pick_file() {
@@ -1288,7 +1287,7 @@ impl eframe::App for KgstvApp {
                             }
                         }
                         let live_label =
-                            if self.live.is_some() { "⏹ Canlı Decode Durdur" } else { "🎙 Canlı Decode Başlat" };
+                            if self.live.is_some() { "⏹ Stop Live Decode" } else { "🎙 Start Live Decode" };
                         if ui.add_enabled(self.wav_sim.is_none(), egui::Button::new(live_label)).clicked() {
                             self.toggle_live(&ctx);
                         }
@@ -1299,22 +1298,22 @@ impl eframe::App for KgstvApp {
                         ui.label(&self.status);
                     }
                     Mode::Tx => {
-                        if ui.add_enabled(!self.tx_encoding, egui::Button::new("🖼 Resim Seç...")).clicked() {
+                        if ui.add_enabled(!self.tx_encoding, egui::Button::new("🖼 Choose Image...")).clicked() {
                             if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("Görüntü", &["png", "jpg", "jpeg", "gif", "bmp"])
+                                .add_filter("Image", &["png", "jpg", "jpeg", "gif", "bmp"])
                                 .pick_file()
                             {
                                 self.load_tx_image(path);
                             }
                         }
                         if ui
-                            .add_enabled(!self.tx_encoding, egui::Button::new("⚙ Kodla"))
+                            .add_enabled(!self.tx_encoding, egui::Button::new("⚙ Encode"))
                             .clicked()
                         {
                             self.start_tx_encode(&ctx, true);
                         }
                         if ui
-                            .add_enabled(self.tx_audio.is_some() && !self.tx_encoding, egui::Button::new("💾 WAV Kaydet"))
+                            .add_enabled(self.tx_audio.is_some() && !self.tx_encoding, egui::Button::new("💾 Save WAV"))
                             .clicked()
                         {
                             self.save_tx_wav();
@@ -1322,15 +1321,15 @@ impl eframe::App for KgstvApp {
                         if ui
                             .add_enabled(
                                 self.tx_audio.is_some() && !self.tx_encoding && !self.tx_playing,
-                                egui::Button::new("🔊 Çal"),
+                                egui::Button::new("🔊 Play"),
                             )
                             .clicked()
                         {
                             self.play_tx(&ctx);
                         }
-                        // Gönderim (özellikle tam bir görüntü) dakikalarca sürebilir — kullanıcı
-                        // isteği: çalmayı erken kesebilecek bir buton.
-                        if ui.add_enabled(self.tx_playing, egui::Button::new("⏹ Durdur")).clicked() {
+                        // A transmission (especially a full image) can take minutes — user
+                        // request: a button that can cut playback off early.
+                        if ui.add_enabled(self.tx_playing, egui::Button::new("⏹ Stop")).clicked() {
                             self.stop_tx_playback();
                         }
                         if self.tx_encoding || self.tx_playing {
@@ -1346,39 +1345,39 @@ impl eframe::App for KgstvApp {
         match self.mode {
             Mode::Rx => {
                 egui::Panel::left("log").resizable(true).default_size(420.0).show(ui, |ui| {
-                    ui.heading("Frame Günlüğü");
-                    ui.label(format!("Kaynak: {}", self.current_file.as_deref().unwrap_or("(yok)")));
+                    ui.heading("Frame Log");
+                    ui.label(format!("Source: {}", self.current_file.as_deref().unwrap_or("(none)")));
                     ui.label(format!(
                         "Frame: {}   Tile: {}/{}",
                         self.frames_total, self.tiles_ok, self.tiles_total
                     ));
                     ui.label(
                         egui::RichText::new(format!(
-                            "📻 Çağrı işareti: {}",
-                            self.last_callsign.as_deref().unwrap_or("(henüz yok)")
+                            "📻 Callsign: {}",
+                            self.last_callsign.as_deref().unwrap_or("(none yet)")
                         ))
                         .strong(),
                     );
                     if let Some(text) = &self.last_text {
-                        ui.label(egui::RichText::new(format!("💬 Metin: {text}")).strong());
+                        ui.label(egui::RichText::new(format!("💬 Text: {text}")).strong());
                     }
                     ui.separator();
-                    ui.collapsing("🎚 Ses Girişi", |ui| {
+                    ui.collapsing("🎚 Audio Input", |ui| {
                         ui.horizontal(|ui| {
                             let devices = self.input_devices.clone();
-                            egui::ComboBox::from_label("Cihaz")
-                                .selected_text(self.selected_input_device.as_deref().unwrap_or("(sistem varsayılanı)"))
+                            egui::ComboBox::from_label("Device")
+                                .selected_text(self.selected_input_device.as_deref().unwrap_or("(system default)"))
                                 .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut self.selected_input_device, None, "(sistem varsayılanı)");
+                                    ui.selectable_value(&mut self.selected_input_device, None, "(system default)");
                                     for d in &devices {
                                         ui.selectable_value(&mut self.selected_input_device, Some(d.clone()), d);
                                     }
                                 });
-                            // Cihaz listesini yeniden tara — sonradan takılan/çıkarılan bir
-                            // USB ses kartı, programı yeniden başlatmadan görünsün diye
-                            // (kullanıcı isteği). Seçili cihaz artık listede yoksa (çıkarılmış
-                            // olabilir) sistem varsayılanına düşülür.
-                            if ui.button("🔄").on_hover_text("Cihazları yeniden tara").clicked() {
+                            // Rescan the device list — so a USB sound card plugged in/removed later
+                            // shows up without restarting the program (user request). If the selected
+                            // device is no longer in the list (it may have been removed), fall back to
+                            // the system default.
+                            if ui.button("🔄").on_hover_text("Rescan devices").clicked() {
                                 self.input_devices = kgstv_modem::list_input_devices();
                                 if let Some(sel) = &self.selected_input_device {
                                     if !self.input_devices.contains(sel) {
@@ -1387,7 +1386,7 @@ impl eframe::App for KgstvApp {
                                 }
                             }
                         });
-                        ui.add(egui::Slider::new(&mut self.input_gain, 0.0..=4.0).text("Giriş seviyesi"));
+                        ui.add(egui::Slider::new(&mut self.input_gain, 0.0..=4.0).text("Input level"));
                         if let Some(live) = &self.live {
                             live.set_gain(self.input_gain);
                         }
@@ -1407,31 +1406,31 @@ impl eframe::App for KgstvApp {
             }
             Mode::Tx => {
                 egui::Panel::left("txpanel").resizable(true).default_size(420.0).show(ui, |ui| {
-                    ui.heading("Gönderim Ayarları");
-                    ui.label(format!("Kaynak: {}", self.tx_source_name.as_deref().unwrap_or("(seçilmedi)")));
+                    ui.heading("Transmit Settings");
+                    ui.label(format!("Source: {}", self.tx_source_name.as_deref().unwrap_or("(none selected)")));
                     ui.separator();
-                    ui.label("Çağrı işareti (opsiyonel):");
+                    ui.label("Callsign (optional):");
                     ui.text_edit_singleline(&mut self.tx_callsign);
-                    ui.label("Mesaj (opsiyonel):");
+                    ui.label("Message (optional):");
                     ui.text_edit_multiline(&mut self.tx_message);
-                    // Kullanıcı isteği: "text ekraninin yanina gonder diye bir buton ekle..
-                    // butona basinca hem kodlama yapsin hem de calsin" — üstteki "⚙ Kodla" +
-                    // "🔊 Çal" ikilisini TEK adıma indiren kısayol. Sonradan gelen düzeltme:
-                    // "text kutusunun yanindaki gonder text i gondermeli sadece" — bu buton
-                    // 300 tile'lık görüntüyü DAHİL ETMEZ, sadece çağrı işareti (varsa) + metni
-                    // kodlar (`include_image=false`) — hızlı bir metin-only gönderim kısayolu.
+                    // User request: "add a send button next to the text box..
+                    // when I press the button it should both encode and play" — a shortcut that reduces the
+                    // "⚙ Encode" + "🔊 Play" pair above to a SINGLE step. Later correction:
+                    // "the send next to the text box should send only the text" — this button
+                    // does NOT INCLUDE the 300-tile image, it only encodes the callsign (if any) + text
+                    // (`include_image=false`) — a quick text-only send shortcut.
                     if ui
-                        .add_enabled(!self.tx_encoding && !self.tx_playing, egui::Button::new("📨 Gönder"))
+                        .add_enabled(!self.tx_encoding && !self.tx_playing, egui::Button::new("📨 Send"))
                         .clicked()
                     {
                         self.tx_auto_play_after_encode = true;
                         self.start_tx_encode(&ctx, false);
                     }
                     ui.add_space(8.0);
-                    // Orijinal Windows göndericisindeki "Scale" açılır listesiyle BİREBİR aynı
-                    // (bkz. `TX_SCALE_LABELS` dokümantasyonu) — kullanıcı geri bildirimiyle
-                    // düzeltildi: eskiden burada ham bir 1-15 slider vardı, gerçek programı
-                    // bilen bir kullanıcı için "scale" değerleri (0.07…2.0) anlamsız kalıyordu.
+                    // EXACTLY the same as the "Scale" drop-down list in the original Windows sender
+                    // (see the `TX_SCALE_LABELS` documentation) — corrected via user feedback:
+                    // there used to be a raw 1-15 slider here, and for a user who knows the real program
+                    // the "scale" values (0.07…2.0) were meaningless.
                     ui.horizontal(|ui| {
                         ui.label("Scale:");
                         egui::ComboBox::from_id_salt("tx_scale")
@@ -1442,29 +1441,29 @@ impl eframe::App for KgstvApp {
                                 }
                             });
                     });
-                    ui.checkbox(&mut self.tx_conv, "Konvolüsyonel kodlama (CONV)");
-                    ui.checkbox(&mut self.tx_fsk4, "4L-FSK modülasyonu (metin+görüntü için — çağrı işareti hep MSK)");
+                    ui.checkbox(&mut self.tx_conv, "Convolutional coding (CONV)");
+                    ui.checkbox(&mut self.tx_fsk4, "4L-FSK modulation (for text+image — callsign is always MSK)");
                     ui.add_space(8.0);
                     let (done, total) = self.tx_progress;
                     if total > 0 {
                         ui.add(egui::ProgressBar::new(done as f32 / total as f32).text(format!("{done}/{total}")));
                     }
                     ui.separator();
-                    ui.label("300 tile (20×15), 1200 baud MSK — gerçek KG-STV ile aynı çerçeveleme.");
+                    ui.label("300 tiles (20×15), 1200 baud MSK — same framing as real KG-STV.");
                     ui.separator();
-                    ui.collapsing("🎚 Ses Çıkışı", |ui| {
+                    ui.collapsing("🎚 Audio Output", |ui| {
                         ui.horizontal(|ui| {
                             let devices = self.output_devices.clone();
-                            egui::ComboBox::from_label("Cihaz")
-                                .selected_text(self.selected_output_device.as_deref().unwrap_or("(sistem varsayılanı)"))
+                            egui::ComboBox::from_label("Device")
+                                .selected_text(self.selected_output_device.as_deref().unwrap_or("(system default)"))
                                 .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut self.selected_output_device, None, "(sistem varsayılanı)");
+                                    ui.selectable_value(&mut self.selected_output_device, None, "(system default)");
                                     for d in &devices {
                                         ui.selectable_value(&mut self.selected_output_device, Some(d.clone()), d);
                                     }
                                 });
-                            // Bkz. giriş tarafındaki aynı butonun yorumu.
-                            if ui.button("🔄").on_hover_text("Cihazları yeniden tara").clicked() {
+                            // See the comment on the same button on the input side.
+                            if ui.button("🔄").on_hover_text("Rescan devices").clicked() {
                                 self.output_devices = kgstv_modem::list_output_devices();
                                 if let Some(sel) = &self.selected_output_device {
                                     if !self.output_devices.contains(sel) {
@@ -1473,14 +1472,14 @@ impl eframe::App for KgstvApp {
                                 }
                             }
                         });
-                        ui.add(egui::Slider::new(&mut self.output_gain, 0.0..=4.0).text("Çıkış seviyesi"));
+                        ui.add(egui::Slider::new(&mut self.output_gain, 0.0..=4.0).text("Output level"));
                     });
                 });
             }
         }
 
         egui::Panel::bottom("eye").resizable(true).default_size(340.0).min_size(160.0).show(ui, |ui| {
-            ui.heading("Göz Diyagramı (Eye Diagram) — anlık frekans discriminator");
+            ui.heading("Eye Diagram — instantaneous frequency discriminator");
             let (rect, _resp) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), ui.available_height()),
                 egui::Sense::hover(),
@@ -1490,13 +1489,13 @@ impl eframe::App for KgstvApp {
 
         egui::CentralPanel::default().show(ui, |ui| match self.mode {
             Mode::Rx => {
-                ui.heading("Görüntü (320×240)");
+                ui.heading("Image (320×240)");
                 if let Some(tex) = &self.texture {
-                    // Sabit 2.0 yerine mevcut panel alanına göre uyarlanan bir ölçek — pencere
-                    // varsayılan boyutunda görüntü kırpılıp kullanıcının pencereyi elle
-                    // büyütmesini gerektiriyordu (kullanıcı geri bildirimi: "resim ekraninin
-                    // yuksekligine gore etrafindaki cerceveyi ayarla, tam gormek icin ekrani
-                    // buyutmem gerekiyor").
+                    // An adaptive scale based on the available panel area instead of a fixed 2.0 — at the
+                    // default window size the image was cropped and the user had to enlarge the window
+                    // by hand (user feedback: "adjust the frame around the picture to the screen
+                    // height, I have to enlarge the window to see it
+                    // fully").
                     let scale = image_fit_scale(ui.available_size());
                     ui.add(
                         egui::Image::new(tex)
@@ -1505,16 +1504,16 @@ impl eframe::App for KgstvApp {
                 }
             }
             Mode::Tx => {
-                ui.heading("Gönderilecek Görüntü (320×240)");
-                // Çalarken ilerleme çubuğu — kullanıcı isteği: "bir yuzde tamamlanma gosteren
-                // progressbar mi koysak". Süre-bazlı (örnek-hassas takip yerine — `play_blocking`
-                // cihaz gerektirdiğinde yeniden örnekleme yapabilir, ama süre değişmez).
+                ui.heading("Image to Send (320×240)");
+                // Progress bar while playing — user request: "shall we add a progress bar
+                // showing percentage complete". Time-based (instead of sample-precise tracking — `play_blocking`
+                // may resample when the device requires it, but the duration does not change).
                 if self.tx_playing {
                     if let Some((sr, samples)) = &self.tx_audio {
                         let elapsed = self.tx_play_started.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
                         let total = (samples.len() as f64 / sr).max(1e-6);
                         let frac = (elapsed / total).clamp(0.0, 1.0);
-                        ui.add(egui::ProgressBar::new(frac as f32).text(format!("gönderiliyor — %{:.0}", frac * 100.0)));
+                        ui.add(egui::ProgressBar::new(frac as f32).text(format!("sending — {:.0}%", frac * 100.0)));
                     }
                 }
                 if let Some(tex) = &self.tx_texture {
@@ -1523,10 +1522,10 @@ impl eframe::App for KgstvApp {
                         egui::Image::new(tex)
                             .fit_to_exact_size(egui::vec2(IMG_W as f32 * scale, IMG_H as f32 * scale)),
                     );
-                    // Şu ana kadar gönderilmiş tile'ları resim üzerinde işaretle — kullanıcı
-                    // isteği: "resimde gonderilen kismi isaretlesek anlasilirlik icin". Henüz
-                    // GÖNDERİLMEMİŞ tile'lar karartılır, böylece "açığa çıkan" kısım gönderilmiş
-                    // olanı gösterir (bir tarama/reveal etkisi).
+                    // Mark the tiles sent so far on the image — user
+                    // request: "let's mark the sent part on the picture for clarity". Tiles NOT YET
+                    // SENT are darkened, so the "revealed" part shows what has been sent
+                    // (a scan/reveal effect).
                     if self.tx_playing {
                         let sent = self.tx_tiles_sent_so_far();
                         let painter = ui.painter_at(resp.rect);
@@ -1552,17 +1551,17 @@ impl eframe::App for KgstvApp {
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            // 800 yükseklik, varsayılan panel boyutlarıyla (üst araç çubuğu + 480px'lik 2×
-            // ölçekli görüntü + göz diyagramı paneli) görüntüyü kırpıyordu (bkz.
-            // `image_fit_scale` dokümantasyonu) — 960'a çıkarıldı ki varsayılan pencerede de
-            // görüntü tam sığsın (uyarlanan ölçek zaten daha küçük pencerelerde de asla
-            // kırpılmamasını garanti ediyor, bu sadece daha iyi bir varsayılanı hedefliyor).
+            // A height of 800 cropped the image with the default panel sizes (top toolbar + 2×-scaled
+            // 480px image + eye-diagram panel) (see the
+            // `image_fit_scale` documentation) — increased to 960 so the image fits fully in the
+            // default window too (the adaptive scale already guarantees it is never cropped in smaller
+            // windows; this just aims for a better default).
             .with_inner_size([1150.0, 960.0])
             .with_title("Atölye m-KGSTV"),
         ..Default::default()
     };
-    // İsteğe bağlı: `kgstv-gui <kayit.wav>` şeklinde çağrılırsa o dosyayı açılışta otomatik
-    // yükler (native dosya seçiciyle uğraşmadan hızlı test/betikleme için kullanışlı).
+    // Optional: if invoked as `kgstv-gui <recording.wav>`, automatically loads that file at
+    // startup (handy for quick testing/scripting without dealing with the native file picker).
     let cli_wav_path = std::env::args().nth(1).map(PathBuf::from);
     eframe::run_native(
         "Atölye m-KGSTV",

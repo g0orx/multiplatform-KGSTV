@@ -1,7 +1,7 @@
-//! Üst seviye oturum (session) API'si: bir ses kaydını KG-STV frame'lerine decode etmek,
-//! ya da bir dizi frame'i (çağrı işareti + görüntü tile'ları) ses kaydına encode etmek.
-//! Bit-seviyesi protokol mantığı tamamen `kgstv_core::frame`'e devredilir; bu modül sadece
-//! ses <-> bit dönüşümünü (MSK demod/mod + senkron arama) protokolle birleştirir.
+//! Top-level session API: decoding an audio recording into KG-STV frames,
+//! or encoding a series of frames (callsign + image tiles) into an audio recording.
+//! The bit-level protocol logic is delegated entirely to `kgstv_core::frame`; this module only
+//! combines the audio <-> bit conversion (MSK demod/mod + sync search) with the protocol.
 
 use crate::filter::bandpass_filtfilt;
 use crate::fsk4::{self, Fsk4Detector};
@@ -11,25 +11,25 @@ use kgstv_core::constants::{sync_word_bits, PREAMBLE_LEN};
 use kgstv_core::header::InfoChunk;
 use kgstv_core::{frame, Command};
 
-/// Bozuk bir header'dan sonra ARA senkron kelimesi aranırken taranacak azami slot (bit)
-/// penceresi. Header okunamadığında `hdr.size` bilinmediğinden bu frame'in veri chunk'ının
-/// gerçek uzunluğu da bilinmez — bu yüzden pencere, olası en uzun veri chunk'ını (12-bit
-/// `size` alanı: azami 4095 bit ham veri + 16 bit CRC, konvolüsyonel kod açıkken ×2) rahatça
-/// kapsayacak kadar geniş tutulur.
+/// Maximum slot (bit) window to scan when searching for an INTERMEDIATE sync word after a
+/// corrupted header. When the header cannot be read, `hdr.size` is unknown, so the real length of
+/// this frame's data chunk is unknown too — so the window is kept wide enough to comfortably
+/// cover the longest possible data chunk (12-bit `size` field: at most 4095 bits of raw data + 16
+/// bits of CRC, ×2 with the convolutional code on).
 const MID_STREAM_RESYNC_WINDOW: i64 = ((4095 + 16) * 2) + HEADER_ENC_LEN + SYNC_LEN as i64 + 64;
 
-/// 4L-FSK veri chunk'ı çözümünde denenecek global faz ofseti (radyan) sayısı — bilinmeyen
-/// mutlak taşıyıcı fazını telafi etmek için [0, 60°) aralığını tarar (bkz. `fsk4.rs`
-/// modül dokümantasyonu, "6 durumlu CPM trellis"). CRC geçen ilk ofsette erken çıkılır.
+/// Number of global phase offsets (radians) to try when decoding a 4L-FSK data chunk — scans the
+/// [0, 60°) range to compensate for the unknown absolute carrier phase (see the `fsk4.rs`
+/// module documentation, "6-state CPM trellis"). Exits early at the first offset that passes CRC.
 const FSK4_PHASE_SEARCH_STEPS: usize = 16;
 
-/// 4L-FSK için ince zamanlama kayması taraması (örnek cinsinden, `anchor`'a eklenir).
-/// Gerçek kayıtlarda, MSK'nin (büyüklük-bazlı, faz-uyumsuz) demodülasyonuna tamamen görünmez
-/// kalan birkaç örneklik bir sabit kayma bulundu (bkz. docs/protocol_spec.md, "4L-FSK ince
-/// zamanlama kayması") — faz-uyumlu (coherent) Viterbi korelasyonu buna çok duyarlı. Bu kayma
-/// muhtemelen tüm dosya için SABİT (kayıt zincirinin grup gecikmesi); bu yüzden
-/// `decode_wav_sequential_cb` ilk başarılı 4L-FSK chunk'ından sonra bulduğu kaymayı bir
-/// "ipucu" olarak sonraki chunk'lara taşır (önce sadece ipucunu dener, hızlı yol).
+/// Fine timing-shift scan for 4L-FSK (in samples, added to `anchor`).
+/// In real recordings a constant shift of a few samples was found that is completely invisible to
+/// MSK's (magnitude-based, non-coherent) demodulation (see docs/protocol_spec.md, "4L-FSK fine
+/// timing shift") — the phase-coherent Viterbi correlation is very sensitive to it. This shift
+/// is probably CONSTANT for the whole file (group delay of the recording chain); so
+/// `decode_wav_sequential_cb` carries the shift found after the first successful 4L-FSK chunk as a
+/// "hint" to subsequent chunks (it tries only the hint first, the fast path).
 const FSK4_SHIFT_SEARCH: [f64; 33] = [
     -8.0, -7.5, -7.0, -6.5, -6.0, -5.5, -5.0, -4.5, -4.0, -3.5, -3.0, -2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0,
     1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0,
@@ -41,7 +41,7 @@ const HEADER_ENC_LEN: i64 = 108;
 pub struct FrameResult {
     pub header: InfoChunk,
     pub header_metric: u32,
-    /// Header'ın hemen sonrasındaki veri chunk'ının ham bitleri (varsa; END/BSR_REQ/ABORT'ta yok).
+    /// Raw bits of the data chunk immediately after the header (if any; none for END/BSR_REQ/ABORT).
     pub data_bits: Option<Vec<u8>>,
     pub data_crc_ok: bool,
 }
@@ -55,7 +55,7 @@ fn decode_header_at(clk: &ToneClock, anchor: f64, pos: i64) -> (InfoChunk, u32, 
     frame::decode_header(&rx)
 }
 
-/// MSK (2-seviyeli) veri chunk'ı çözer. `n`: kodlanmış+whitened bit sayısı.
+/// Decodes an MSK (2-level) data chunk. `n`: number of encoded+whitened bits.
 fn decode_data_msk(clk: &ToneClock, anchor: f64, pos: i64, n: i64, size_bits: usize, conv: bool) -> (Vec<u8>, bool) {
     let rx: Vec<u8> = (0..n).map(|i| clk.msk_bit(anchor, pos + i)).collect();
     if conv {
@@ -65,12 +65,12 @@ fn decode_data_msk(clk: &ToneClock, anchor: f64, pos: i64, n: i64, size_bits: us
     }
 }
 
-/// 4L-FSK veri chunk'ı çözer: bilinmeyen mutlak taşıyıcı fazını [0,60°) aralığında, ve bilinmeyen
-/// ince zamanlama kaymasını (bkz. `FSK4_SHIFT_SEARCH`) tarayıp, her adayı gerçek CRC ile
-/// doğrulayarak en iyisini seçer (bkz. `fsk4.rs`). `n`: kodlanmış+whitened bit sayısı —
-/// sembol sayısı `ceil(n/2)`'dir (her sembol 2 bit taşır). `shift_hint`: önceki chunk'ta
-/// bulunan kayma (önce bu denenir — genelde tüm dosya için sabit olduğundan hızlı yoldur).
-/// Dönüş: (veri, crc_ok, kullanılan kayma).
+/// Decodes a 4L-FSK data chunk: scans the unknown absolute carrier phase over [0,60°) and the
+/// unknown fine timing shift (see `FSK4_SHIFT_SEARCH`), verifying each candidate with the real CRC
+/// and choosing the best (see `fsk4.rs`). `n`: number of encoded+whitened bits —
+/// the number of symbols is `ceil(n/2)` (each symbol carries 2 bits). `shift_hint`: the shift found
+/// in the previous chunk (tried first — usually the fast path since it is constant for the whole file).
+/// Returns: (data, crc_ok, shift used).
 fn decode_data_fsk4(
     filtered: &[f64],
     sample_rate: f64,
@@ -104,7 +104,7 @@ fn decode_data_fsk4(
     }
     for &shift in &FSK4_SHIFT_SEARCH {
         if (shift - shift_hint).abs() < 0.01 {
-            continue; // zaten denendi
+            continue; // already tried
         }
         if let Some((data, ok)) = try_shift(shift) {
             return (data, ok, shift);
@@ -113,10 +113,10 @@ fn decode_data_fsk4(
     (Vec::new(), false, shift_hint)
 }
 
-/// Temiz/kısa bir MSK kaydını (senkron bir kez bulunup, ardından sıralı olarak yürünür)
-/// baştan sona decode eder. Uzun/gürültülü gerçek kayıtlar için `research/decoder/
-/// decode_session.py`'deki bağımsız-aday-tarama yaklaşımı daha güvenilirdir — bu, o
-/// yaklaşımın Rust'a taşınması için iyi bir temel oluşturur.
+/// Decodes a clean/short MSK recording from start to finish (sync is found once, then walked
+/// sequentially). For long/noisy real recordings the independent-candidate scanning approach in
+/// `research/decoder/decode_session.py` is more reliable — this forms a good basis for porting
+/// that approach to Rust.
 pub fn decode_wav_sequential(
     samples: &[f64],
     sample_rate: f64,
@@ -130,9 +130,9 @@ pub fn decode_wav_sequential(
     (anchor, frames)
 }
 
-/// `decode_wav_sequential` ile aynı, ama her frame decode edildikçe `on_frame` çağrılır
-/// (Vec'i sonuna kadar biriktirmeden). GUI gibi ilerlemeli/canlı gösterim yapan
-/// çağıranlar için tasarlandı — her frame'i biriktirmeden hemen işleme alabilirler.
+/// Same as `decode_wav_sequential`, but `on_frame` is called as each frame is decoded
+/// (without accumulating the Vec until the end). Designed for callers doing progressive/live
+/// display such as the GUI — they can process each frame immediately without accumulating.
 pub fn decode_wav_sequential_cb(
     samples: &[f64],
     sample_rate: f64,
@@ -142,11 +142,11 @@ pub fn decode_wav_sequential_cb(
 ) -> f64 {
     let filtered = bandpass_filtfilt(samples, sample_rate, 900.0, 2200.0);
     let clk = ToneClock::new(&filtered, sample_rate);
-    // Kaba tarama adımı sembol süresinin (~tb) dörtte biri: gerçek kayıtlarda senkron
-    // genellikle preamble/sync'ten SANİYELER sonra başlar (kayıt cihazının başlatma gecikmesi,
-    // sessizlik vb.) — tüm `coarse_search_len` aralığını adım=1 ile taramak gereksiz yavaş
-    // olurdu; `fine_span`'i bu adıma eşitlemek, atlanan aradaki örnekleri ince aramanın telafi
-    // etmesini garanti eder.
+    // Coarse scan step is a quarter of the symbol duration (~tb): in real recordings the sync
+    // often starts SECONDS after the preamble/sync (recorder start-up delay,
+    // silence etc.) — scanning the whole `coarse_search_len` range with step=1 would be needlessly
+    // slow; setting `fine_span` equal to this step guarantees the fine search compensates for the
+    // skipped samples in between.
     let coarse_step = ((clk.tb() / 4.0).floor() as i64).max(1);
     let (anchor, _err) = find_sync(
         &clk,
@@ -158,19 +158,19 @@ pub fn decode_wav_sequential_cb(
     anchor
 }
 
-/// `decode_wav_sequential_cb` ile aynı, ama senkron ARAMASINI atlayıp verilen `anchor`'ı
-/// doğrudan kullanır.
+/// Same as `decode_wav_sequential_cb`, but skips the sync SEARCH and uses the given `anchor`
+/// directly.
 ///
-/// Büyüyen bir tamponu tekrar tekrar decode eden çağıranlar için (canlı mikrofon / gerçek
-/// zamanlı WAV oynatma simülasyonu, bkz. `kgstv-gui`): her pas'ta `find_sync`'i yeniden
-/// çalıştırmak, arama aralığı (`coarse_search_len = min(15sn, o anki tampon uzunluğu)`)
-/// tamponla birlikte değiştiğinden PAS'TAN PAS'A BİRKAÇ ÖRNEK FARKLI bir anchor bulabiliyordu
-/// — bu da daha önce başarıyla decode edilmiş frame'lerin konumunu kaydırıp, o pas'ın
-/// header CRC'sini erkenden bozup TÜM yürüyüşün (ve dolayısıyla görüntü tile'larının) hiç
-/// ilerlemeden durmasına yol açabiliyordu (gerçek kayıtla doğrulanan bir hataydı — kullanıcı
-/// geri bildirimi: "cozumleme de cok basarisiz ... goruntu hic cozumlemedi"). Anchor'ı bir kez
-/// bulup sabitlemek (çağıran tarafından `Option` olarak saklanıp tekrar verilerek) bu
-/// istikrarsızlığı ortadan kaldırır.
+/// For callers that repeatedly decode a growing buffer (live microphone / real-time
+/// WAV playback simulation, see `kgstv-gui`): re-running `find_sync` on every pass could find
+/// an anchor A FEW SAMPLES DIFFERENT FROM PASS TO PASS, since the search range
+/// (`coarse_search_len = min(15s, current buffer length)`) changes with the buffer
+/// — which could shift the positions of previously successfully decoded frames, break that pass's
+/// header CRC early and make the WHOLE walk (and hence the image tiles) stop without ever
+/// progressing (this was a bug verified with a real recording — user
+/// feedback: "decoding is also very unsuccessful ... the image never decoded"). Finding the anchor
+/// once and pinning it (stored by the caller as an `Option` and passed back in) removes this
+/// instability.
 pub fn decode_wav_sequential_cb_from_anchor(
     samples: &[f64],
     sample_rate: f64,
@@ -192,9 +192,9 @@ fn walk_frames(
     mut on_frame: impl FnMut(FrameResult),
 ) {
     let mut pos = PREAMBLE_LEN as i64 + SYNC_LEN as i64;
-    // Bir 4L-FSK chunk'ında bulunan ince zamanlama kayması, sonraki 4L-FSK chunk'ları için
-    // ipucu olarak taşınır (bkz. `FSK4_SHIFT_SEARCH` dokümantasyonu — genelde tüm dosya için
-    // sabit bir kayma, dolayısıyla ilk bulunuşundan sonra taramayı büyük ölçüde hızlandırır).
+    // The fine timing shift found in one 4L-FSK chunk is carried as a hint for subsequent 4L-FSK
+    // chunks (see the `FSK4_SHIFT_SEARCH` documentation — usually a constant shift for the whole
+    // file, so after it is first found it speeds up the scan considerably).
     let mut fsk4_shift_hint = 0.0f64;
     for _ in 0..max_frames {
         if pos + HEADER_ENC_LEN > filtered.len() as i64 {
@@ -202,33 +202,33 @@ fn walk_frames(
         }
         let (hdr, metric, crc_ok) = decode_header_at(&clk, anchor, pos);
         if !crc_ok {
-            // Header bozuk (kanal gürültüsü/RF bozulması) — eskiden burada tüm yürüyüş
-            // DURUYORDU, bu da (canlı modda anchor önbelleğe alındığından) her yeniden
-            // decode pas'ının TAM AYNI noktada tekrar tekrar takılıp kalmasına yol açıyordu
-            // (kullanıcı geri bildirimi: "birkac frame den sonra decode duruyor", ekranda
-            // frame sayacı sabit kalıyordu). Ardışık frame'ler arasında sadece 63-bit senkron
-            // kelimesi tekrarlandığından (preamble YOK), bozuk header'ı atlayıp bir SONRAKİ
-            // senkron kelimesini arayarak akışa geri dönebiliriz.
+            // Corrupted header (channel noise/RF corruption) — previously the whole walk
+            // STOPPED here, which (since the anchor is cached in live mode) made every re-decode
+            // pass get stuck at EXACTLY THE SAME point over and over
+            // (user feedback: "decoding stops after a few frames", the frame counter on screen
+            // stayed constant). Since only the 63-bit sync word is repeated between consecutive
+            // frames (NO preamble), we can skip the corrupted header and get back into the stream
+            // by searching for the NEXT sync word.
             match find_mid_stream_sync(clk, anchor, pos, MID_STREAM_RESYNC_WINDOW.min(filtered.len() as i64 - pos)) {
                 Some(resync_pos) => {
                     pos = resync_pos + SYNC_LEN as i64;
                     continue;
                 }
-                None => break, // pencerede geçerli bir senkron bulunamadı — akışın sonu
+                None => break, // no valid sync found in the window — end of stream
             }
         }
         let data_start = pos + HEADER_ENC_LEN;
         if !has_data_chunk(hdr.com) {
             on_frame(FrameResult { header: hdr, header_metric: metric, data_bits: None, data_crc_ok: false });
-            // END/ABORT, oturumun resmen bittiğini/iptal edildiğini bildiren sinyaldir (normal
-            // tamamlanmada 3× art arda gönderilir, bkz. protocol_spec.md). Bundan sonrası artık
-            // gerçek KG-STV verisi DEĞİL — sessizlik/gürültü. Eskiden yürüyüş buna rağmen devam
-            // ediyordu; bozuk-header resync eklendikten (bkz. `find_mid_stream_sync`) sonra bu,
-            // alıcının kalan gürültü içinde SAHTE bir senkron kelimesi bulup rastgele bir header
-            // CRC'sinin şansla tutması ihtimaliyle ekrana ÇÖP frame'ler (ve hatta yanlış x/y'ye
-            // yazılan görüntü tile'ları — kullanıcı geri bildirimi: "aldigi verileri de
-            // bozuyor") üretmesine yol açabiliyordu. BSR_REQUEST bilinçli olarak buraya dahil
-            // DEĞİL — o normal oturum akışının bir parçası, bitiş sinyali değil.
+            // END/ABORT is the signal announcing that the session has formally ended/been cancelled
+            // (sent 3× in a row on normal completion, see protocol_spec.md). What follows is no longer
+            // real KG-STV data — it is silence/noise. Previously the walk carried on regardless;
+            // after the corrupted-header resync was added (see `find_mid_stream_sync`) this could
+            // make the receiver find a SPURIOUS sync word in the remaining noise and, with the chance
+            // that a random header CRC happens to match, produce GARBAGE frames on screen (and even
+            // image tiles written at the wrong x/y — user feedback: "it also corrupts the data it
+            // received"). BSR_REQUEST is deliberately NOT included here
+            // — it is part of the normal session flow, not an end signal.
             if matches!(Command::from_u8(hdr.com), Some(Command::End) | Some(Command::Abort)) {
                 break;
             }
@@ -257,25 +257,25 @@ fn walk_frames(
         } else {
             decode_data_msk(&clk, anchor, data_start, enc_len, hdr.size as usize, conv)
         };
-        // Zaman ekseninde kullanılan "slot" sayısı: MSK'de her kodlanmış BİT bir slot (1200
-        // baud); 4L-FSK'de her SEMBOL bir slot ve her sembol 2 bit taşır — bu yüzden slot
-        // sayısı `enc_len` değil `ceil(enc_len/2)`'dir. Bunu karıştırmak sonraki frame'in
-        // senkron kelimesini yanlış konumda aramaya (ve tüm oturumun kaymasına) yol açar.
+        // Number of "slots" used on the time axis: in MSK each encoded BIT is one slot (1200
+        // baud); in 4L-FSK each SYMBOL is one slot and each symbol carries 2 bits — so the slot
+        // count is `ceil(enc_len/2)`, not `enc_len`. Mixing this up leads to searching for the next
+        // frame's sync word at the wrong position (and the whole session drifting).
         let slots_used = if fsk4_mode { (enc_len + 1) / 2 } else { enc_len };
         on_frame(FrameResult { header: hdr, header_metric: metric, data_bits: Some(data_bits), data_crc_ok });
         pos = data_start + slots_used + SYNC_LEN as i64;
     }
 }
 
-/// `search_start`'tan başlayarak `search_len` slot'luk bir pencerede, ARA (preamble'sız)
-/// 63-bit senkron kelimesini arar — `sync::sync_err`'in aksine `PREAMBLE_LEN` ofseti
-/// KULLANILMAZ, çünkü ardışık frame'ler arasında sadece senkron kelimesi tekrarlanır
-/// (preamble sadece dosyanın en başında bir kez gönderilir, bkz. protocol_spec.md). Bozuk
-/// bir header'dan sonra `walk_frames`'in akışa geri dönmesi için kullanılır.
+/// Searches for the INTERMEDIATE (preamble-less) 63-bit sync word in a window of `search_len`
+/// slots starting at `search_start` — unlike `sync::sync_err`, the `PREAMBLE_LEN` offset is
+/// NOT used, because only the sync word is repeated between consecutive frames
+/// (the preamble is sent only once at the very start of the file, see protocol_spec.md). Used
+/// by `walk_frames` to get back into the stream after a corrupted header.
 ///
-/// Küçük bir bit-hata payına izin verilir (senkron kelimesinin kendisi de kanal
-/// gürültüsünden birkaç bit hatalı gelebilir); en iyi (en düşük hatalı) aday, eşik altındaysa
-/// döner — eşiğin üstündeyse (pencerede güvenilir bir eşleşme yoksa) `None`.
+/// A small bit-error margin is allowed (the sync word itself may arrive with a few bit
+/// errors from channel noise); the best (lowest-error) candidate is returned if it is below the
+/// threshold — if above the threshold (no reliable match in the window), `None`.
 fn find_mid_stream_sync(clk: &ToneClock, anchor: f64, search_start: i64, search_len: i64) -> Option<i64> {
     let sw = sync_word_bits();
     let mut best: Option<(u32, i64)> = None;
@@ -296,33 +296,33 @@ fn find_mid_stream_sync(clk: &ToneClock, anchor: f64, search_start: i64, search_
     best.filter(|&(err, _)| err <= (SYNC_LEN as u32) / 6).map(|(_, cand)| cand)
 }
 
-/// Bir dizi (header, ham-veri-bitleri) frame'ini tam bir KG-STV oturumuna (preamble bir kez,
-/// her frame kendi senkron kelimesiyle, sonda 3× END sinyali) ve ardından ses örneklerine
-/// encode eder. `header.size`, `data_bits.len()` ile TUTARLI olmalıdır (çağıran sorumludur).
+/// Encodes a series of (header, raw-data-bits) frames into a full KG-STV session (preamble once,
+/// each frame with its own sync word, 3× END signal at the end) and then into audio samples.
+/// `header.size` must be CONSISTENT with `data_bits.len()` (the caller is responsible).
 pub fn encode_session_audio(frames: &[(InfoChunk, Vec<u8>)], sample_rate: f64) -> Vec<f64> {
     encode_session_audio_cb(frames, sample_rate, |_, _, _| {})
 }
 
-/// `encode_session_audio` ile aynı, ama her frame'in bit-düzeyi kodlaması bitince
-/// `on_progress(tamamlanan, toplam, o_ana_kadarki_toplam_örnek_sayısı)` çağrılır — GUI gibi
-/// ilerleme çubuğu gösteren çağıranlar için (görüntü gönderiminde yüzlerce tile olabileceğinden).
-/// Üçüncü parametre (kümülatif örnek sayısı), çağıranın her frame'in ÇALMA sırasında sesin
-/// hangi konumuna denk geldiğini (ör. TX önizlemesinde "şu ana kadar gönderilen tile'ları"
-/// işaretlemek için) hesaplayabilmesi içindir.
+/// Same as `encode_session_audio`, but `on_progress(completed, total, total_samples_so_far)` is
+/// called as each frame's bit-level encoding finishes — for callers that show a progress bar,
+/// such as the GUI (since an image transmission can have hundreds of tiles).
+/// The third parameter (cumulative sample count) lets the caller compute which position in the
+/// audio each frame corresponds to during PLAYBACK (e.g. to mark "tiles sent so far" in the
+/// TX preview).
 pub fn encode_session_audio_cb(
     frames: &[(InfoChunk, Vec<u8>)],
     sample_rate: f64,
     mut on_progress: impl FnMut(usize, usize, usize),
 ) -> Vec<f64> {
-    // Preamble/senkron/header HER ZAMAN MSK (bkz. protocol_spec.md: "Bilgi chunk'ı, veri
-    // chunk'ının kendi modülasyon/kodlama ayarından bağımsız olarak her zaman MSK modülasyonu
-    // + konvolüsyonel kodlama ile gönderilir") — sadece veri chunk'ı `hdr.m` alanına göre MSK
-    // ya da 4L-FSK ile modüle edilir. Bu yüzden tüm oturumu tek bir homojen bit dizisi olarak
-    // biriktirip bir kerede modüle EDEMEYİZ (MSK ve 4L-FSK'nin sembol/örnek eşlemesi farklı) —
-    // her segment kendi modülatörüyle sese çevrilip arka arkaya eklenir. Segment sınırlarında
-    // faz sıfırlanır; hem `msk::ToneClock` (büyüklük-bazlı) hem `fsk4::Fsk4Detector`
-    // (faz-ofseti taramalı) alıcıları mutlak faza bağlı olmadığından bu decode doğruluğunu
-    // ETKİLEMEZ.
+    // Preamble/sync/header are ALWAYS MSK (see protocol_spec.md: "The info chunk is always sent
+    // with MSK modulation + convolutional coding, independent of the data chunk's own
+    // modulation/coding setting") — only the data chunk is modulated with MSK or 4L-FSK according
+    // to the `hdr.m` field. So we CANNOT accumulate the whole session as one homogeneous bit
+    // sequence and modulate it in one go (MSK and 4L-FSK have different symbol/sample mappings) —
+    // each segment is converted to audio with its own modulator and appended one after another. Phase
+    // is reset at segment boundaries; since neither the `msk::ToneClock` (magnitude-based) nor the
+    // `fsk4::Fsk4Detector` (phase-offset scanning) receivers depend on absolute phase, this does NOT
+    // AFFECT decode accuracy.
     let total = frames.len();
     let mut audio = modulate_msk(&frame::preamble_bits(), sample_rate);
     for (i, (hdr, data_bits)) in frames.iter().enumerate() {
@@ -339,7 +339,7 @@ pub fn encode_session_audio_cb(
         }
         on_progress(i + 1, total, audio.len());
     }
-    // Normal tamamlanma: bitiş sinyali 3 kez (bkz. protocol_spec.md, çerçeveleme kuralları).
+    // Normal completion: end signal 3 times (see protocol_spec.md, framing rules).
     let end_hdr = InfoChunk { sys: 0, com: Command::End as u8, c: 0, m: 0, x: 0, y: 0, sc: 0, size: 0, crc: 0 };
     for _ in 0..3 {
         audio.extend(modulate_msk(&frame::sync_bits(), sample_rate));
@@ -352,10 +352,10 @@ pub fn encode_session_audio_cb(
 mod tests {
     use super::*;
 
-    /// `decode_wav_sequential_cb_from_anchor`, bilinen doğru anchor'la, tam aramalı
-    /// `decode_wav_sequential_cb` ile TAM AYNI sonucu vermeli — canlı mikrofon/gerçek-zamanlı
-    /// WAV oynatma simülasyonunun anchor'ı önbelleğe alıp yeniden kullanmasının (bkz. `kgstv-gui`
-    /// `maybe_kick_live_decode`) güvenli olduğunu kanıtlıyor.
+    /// `decode_wav_sequential_cb_from_anchor`, with the known correct anchor, must give EXACTLY THE
+    /// SAME result as the fully searching `decode_wav_sequential_cb` — proving that it is safe for the
+    /// live microphone/real-time WAV playback simulation to cache and reuse the anchor (see `kgstv-gui`
+    /// `maybe_kick_live_decode`).
     #[test]
     fn decode_from_known_anchor_matches_full_search() {
         let sr = 44100.0;
@@ -386,15 +386,15 @@ mod tests {
         assert_eq!(frames_cached[0].data_bits.as_ref().unwrap(), &bits);
     }
 
-    /// TX -> RX uçtan uca, 4L-FSK veri chunk'ı: preamble/senkron/header her zaman MSK (bkz.
-    /// `encode_session_audio_cb` dokümantasyonu), ama METİN veri chunk'ı `m=1` ile 4L-FSK
-    /// olarak modüle edilip Viterbi/MLSD demodülatörüyle geri çözülüyor. Hem NORM hem CONV
-    /// kodlama kombinasyonlarını dener.
+    /// TX -> RX end to end, 4L-FSK data chunk: preamble/sync/header are always MSK (see the
+    /// `encode_session_audio_cb` documentation), but the TEXT data chunk is modulated as 4L-FSK
+    /// with `m=1` and decoded back with the Viterbi/MLSD demodulator. Tries both NORM and CONV
+    /// coding combinations.
     #[test]
     fn full_session_roundtrip_fsk4_text_norm_and_conv() {
         let sr = 44100.0;
         for &conv in &[0u8, 1u8] {
-            let text = b"MERHABA 4L-FSK DUNYASI".to_vec();
+            let text = b"HELLO 4L-FSK WORLD".to_vec();
             let mut text_bits = Vec::new();
             for &b in &text {
                 for i in (0..8).rev() {
@@ -416,32 +416,32 @@ mod tests {
             let audio = encode_session_audio(&[(hdr, text_bits.clone())], sr);
             let (_anchor, frames) = decode_wav_sequential(&audio, sr, 500, 10);
 
-            assert!(!frames.is_empty(), "conv={conv}: en az bir frame bulunmalı");
+            assert!(!frames.is_empty(), "conv={conv}: at least one frame must be found");
             let text_frame = &frames[0];
             assert_eq!(text_frame.header.com, Command::Text as u8);
             assert_eq!(text_frame.header.m, 1);
-            assert!(text_frame.data_crc_ok, "conv={conv}: 4L-FSK veri chunk'ı CRC hatalı");
+            assert!(text_frame.data_crc_ok, "conv={conv}: 4L-FSK data chunk has a CRC error");
             assert_eq!(text_frame.data_bits.as_ref().unwrap(), &text_bits, "conv={conv}");
 
-            // Bir sonraki frame'in (END) doğru konumda bulunması, 4L-FSK slot/pos
-            // muhasebesinin (sembol sayısı = ceil(bit/2)) doğru olduğunu kanıtlıyor —
-            // yanlış olsaydı senkron kelimesi yanlış yerde aranır, oturum burada dururdu.
-            assert!(frames.len() >= 2, "conv={conv}: END frame'i bulunamadı — pos muhasebesi kaymış olabilir");
+            // Finding the next frame (END) at the correct position proves that the 4L-FSK slot/pos
+            // accounting (number of symbols = ceil(bits/2)) is correct —
+            // if it were wrong the sync word would be searched at the wrong place and the session would stop here.
+            assert!(frames.len() >= 2, "conv={conv}: END frame not found — pos accounting may have drifted");
             assert_eq!(frames[1].header.com, Command::End as u8);
         }
     }
 
-    /// TX -> RX uçtan uca, 4L-FSK ile GÖRÜNTÜ tile'ları — `kgstv-gui`'nin TX panelindeki
-    /// "4L-FSK modülasyonu" seçeneğinin kullandığı yolun tam bir aynası
-    /// (`full_session_image_roundtrip_solid_tiles`'ın 4L-FSK karşılığı).
+    /// TX -> RX end to end, IMAGE tiles with 4L-FSK — an exact mirror of the path used by the
+    /// "4L-FSK modulation" option in `kgstv-gui`'s TX panel
+    /// (the 4L-FSK counterpart of `full_session_image_roundtrip_solid_tiles`).
     ///
-    /// `quality=15` (en kaba `sc`, en kısa bit dizisi) kasıtlı seçildi: 4L-FSK veri kanalının
-    /// demodülasyonu hâlâ tam olgun değil (bkz. modül dokümantasyonu, "~%80-83 sembol
-    /// doğruluğu") — `scale_qt`'nin kuantizasyon ölçeği düzeltmesinden (bkz. o dokümantasyon,
-    /// "Düzeltme #2") sonra daha düşük `sc` değerleri daha UZUN bit dizileri üretiyor (daha
-    /// az kayıplı), bu da FSK4'ün zaten sınırda olan sembol doğruluğunu CRC'yi bozacak kadar
-    /// aşındırabiliyor. Bu test 4L-FSK MODÜLASYON yolunu doğrulamak için var, JPEG
-    /// kuantizasyon kalitesini değil — en kısa/en sağlam bit dizisini veren `sc` kasıtlı.
+    /// `quality=15` (the coarsest `sc`, the shortest bit sequence) was chosen deliberately: demodulation
+    /// of the 4L-FSK data channel is still not fully mature (see the module documentation, "~80-83% symbol
+    /// accuracy") — after the quantization-scale correction of `scale_qt` (see that documentation,
+    /// "Correction #2") lower `sc` values produce LONGER bit sequences (less
+    /// lossy), which can erode FSK4's already-marginal symbol accuracy enough to break the CRC.
+    /// This test exists to verify the 4L-FSK MODULATION path, not the JPEG
+    /// quantization quality — the `sc` giving the shortest/most robust bit sequence is deliberate.
     #[test]
     fn full_session_image_roundtrip_fsk4() {
         let sr = 44100.0;
@@ -474,22 +474,22 @@ mod tests {
         assert_eq!(image_frames.len(), colors.len());
         for (i, fr) in image_frames.iter().enumerate() {
             assert_eq!(fr.header.m, 1);
-            assert!(fr.data_crc_ok, "4L-FSK tile {i} CRC hatalı");
+            assert!(fr.data_crc_ok, "4L-FSK tile {i} CRC error");
             let bits = fr.data_bits.as_ref().unwrap();
-            let tile = kgstv_core::decode_tile(bits, fr.header.sc).expect("tile decode başarısız");
+            let tile = kgstv_core::decode_tile(bits, fr.header.sc).expect("tile decode failed");
             let rgb = kgstv_core::tile_to_rgb(&tile);
             let [r, g, b] = rgb[8][8];
             let [er, eg, eb] = colors[i];
-            assert!((r as i32 - er as i32).abs() < 40, "r={r} beklenen={er}");
-            assert!((g as i32 - eg as i32).abs() < 40, "g={g} beklenen={eg}");
-            assert!((b as i32 - eb as i32).abs() < 40, "b={b} beklenen={eb}");
+            assert!((r as i32 - er as i32).abs() < 40, "r={r} expected={er}");
+            assert!((g as i32 - eg as i32).abs() < 40, "g={g} expected={eg}");
+            assert!((b as i32 - eb as i32).abs() < 40, "b={b} expected={eb}");
         }
     }
 
     #[test]
     fn full_session_roundtrip_callsign_and_text() {
         let sr = 44100.0;
-        let callsign = b"OH2UDS ".to_vec(); // 7 karakter = 56 bit (BSR aralığında olmasa da test için yeterli)
+        let callsign = b"OH2UDS ".to_vec(); // 7 characters = 56 bits (enough for the test even if not in the BSR range)
         let mut callsign_bits = Vec::new();
         for &b in &callsign {
             for i in (0..8).rev() {
@@ -508,7 +508,7 @@ mod tests {
             crc: 0,
         };
 
-        let text = b"MERHABA DUNYA".to_vec();
+        let text = b"HELLO WORLD".to_vec();
         let mut text_bits = Vec::new();
         for &b in &text {
             for i in (0..8).rev() {
@@ -518,7 +518,7 @@ mod tests {
         let text_hdr = InfoChunk {
             sys: 0,
             com: Command::Text as u8,
-            c: 1, // CONV yolunu da test et
+            c: 1, // test the CONV path too
             m: 0,
             x: 0,
             y: 0,
@@ -533,7 +533,7 @@ mod tests {
         );
 
         let (_anchor, frames) = decode_wav_sequential(&audio, sr, 500, 20);
-        assert!(frames.len() >= 3, "en az callsign+text+end frame'i bulunmalı, bulunan: {}", frames.len());
+        assert!(frames.len() >= 3, "at least callsign+text+end frames must be found, found: {}", frames.len());
 
         assert_eq!(frames[0].header.com, Command::Callsign as u8);
         assert!(frames[0].data_crc_ok);
@@ -546,9 +546,9 @@ mod tests {
         assert_eq!(frames[2].header.com, Command::End as u8);
     }
 
-    /// TX -> RX uçtan uca: `kgstv_core::rgb_to_tile`/`encode_tile` ile encode edilmiş görüntü
-    /// tile'ları, `encode_session_audio` ile ses'e çevrilip `decode_wav_sequential` ile geri
-    /// çözülüyor — `kgstv-gui`'nin TX özelliğinin kullandığı yolun tam bir aynası.
+    /// TX -> RX end to end: image tiles encoded with `kgstv_core::rgb_to_tile`/`encode_tile`
+    /// are converted to audio with `encode_session_audio` and decoded back with `decode_wav_sequential`
+    /// — an exact mirror of the path used by `kgstv-gui`'s TX feature.
     #[test]
     fn full_session_image_roundtrip_solid_tiles() {
         let sr = 44100.0;
@@ -562,7 +562,7 @@ mod tests {
             let hdr = InfoChunk {
                 sys: 0,
                 com: Command::Image as u8,
-                c: (i % 2) as u8, // NORM ve CONV karışık test et
+                c: (i % 2) as u8, // test NORM and CONV mixed
                 m: 0,
                 x: i as u8,
                 y: 0,
@@ -580,27 +580,27 @@ mod tests {
             decoded.iter().filter(|f| f.header.com == Command::Image as u8).collect();
         assert_eq!(image_frames.len(), colors.len());
         for (i, fr) in image_frames.iter().enumerate() {
-            assert!(fr.data_crc_ok, "tile {i} CRC hatalı");
+            assert!(fr.data_crc_ok, "tile {i} CRC error");
             let bits = fr.data_bits.as_ref().unwrap();
-            let tile = kgstv_core::decode_tile(bits, fr.header.sc).expect("tile decode başarısız");
+            let tile = kgstv_core::decode_tile(bits, fr.header.sc).expect("tile decode failed");
             let rgb = kgstv_core::tile_to_rgb(&tile);
             let [r, g, b] = rgb[8][8];
             let [er, eg, eb] = colors[i];
-            // JPEG kayıplı olduğu için birebir değil, ama kanal ilişkisi/dominant renk doğru olmalı.
-            assert!((r as i32 - er as i32).abs() < 40, "r={r} beklenen={er}");
-            assert!((g as i32 - eg as i32).abs() < 40, "g={g} beklenen={eg}");
-            assert!((b as i32 - eb as i32).abs() < 40, "b={b} beklenen={eb}");
+            // Since JPEG is lossy it is not exact, but the channel relationship/dominant colour must be right.
+            assert!((r as i32 - er as i32).abs() < 40, "r={r} expected={er}");
+            assert!((g as i32 - eg as i32).abs() < 40, "g={g} expected={eg}");
+            assert!((b as i32 - eb as i32).abs() < 40, "b={b} expected={eb}");
         }
     }
 
-    /// Bir header'ın kanal gürültüsü/bozulmasıyla okunamaz hâle gelmesi, `walk_frames`'in
-    /// TÜM yürüyüşü durdurmaması gerektiğini doğrular — eskiden ilk bozuk header'da yürüyüş
-    /// TAMAMEN duruyordu (`if !crc_ok { break; }`), bu da canlı modda (anchor önbelleğe
-    /// alındığından) her yeniden decode pas'ının AYNI noktada tekrar tekrar takılıp
-    /// kalmasına yol açıyordu (kullanıcı geri bildirimi: "birkac frame den sonra decode
-    /// duruyor", ekranda frame/tile sayacı ilerlemeden sabit kalıyordu). Ortadaki bir
-    /// frame'in header'ını kasıtlı olarak gürültüyle bozup, ondan SONRAKİ frame'in yine de
-    /// bulunduğunu (ARA senkron kelimesi araması ile, bkz. `find_mid_stream_sync`) doğrular.
+    /// Verifies that a header becoming unreadable due to channel noise/corruption must not stop
+    /// the WHOLE walk in `walk_frames` — previously the walk stopped COMPLETELY at the first corrupted
+    /// header (`if !crc_ok { break; }`), which in live mode (since the anchor is cached) made every
+    /// re-decode pass get stuck at the SAME point over and over (user feedback: "decoding stops
+    /// after a few frames", the frame/tile counter on screen stayed constant without
+    /// progressing). Deliberately corrupts the header of a middle frame with noise and verifies
+    /// that the frame AFTER it is still found (via the INTERMEDIATE sync-word search, see
+    /// `find_mid_stream_sync`).
     #[test]
     fn walk_frames_recovers_after_corrupted_header_mid_stream() {
         let sr = 44100.0;
@@ -626,9 +626,8 @@ mod tests {
         }
         let mut audio = encode_session_audio(&frames, sr);
 
-        // İkinci frame'in (index 1) header'ının ses içindeki tam konumunu, encode ile AYNI
-        // adımları (preamble + frame0[sync+header+data] + frame1'in senkronu) tekrarlayarak
-        // hesapla.
+        // Compute the exact position of the second frame's (index 1) header in the audio by repeating
+        // the SAME steps as the encode (preamble + frame0[sync+header+data] + frame1's sync).
         let mut prefix = modulate_msk(&frame::preamble_bits(), sr);
         prefix.extend(modulate_msk(&frame::sync_bits(), sr));
         prefix.extend(modulate_msk(&frame::encode_header(&frames[0].0), sr));
@@ -638,8 +637,8 @@ mod tests {
         let header1_start = prefix.len();
         let header1_len = modulate_msk(&frame::encode_header(&frames[1].0), sr).len();
 
-        // O bölgeyi gürültüyle değiştir (header CRC'sinin kesin başarısız olması için) — ama
-        // öncesindeki/sonrasındaki senkron kelimeleri ve diğer frame'ler bozulmadan kalır.
+        // Replace that region with noise (so the header CRC definitely fails) — but the sync words
+        // before/after it and the other frames stay intact.
         for (i, s) in audio[header1_start..header1_start + header1_len].iter_mut().enumerate() {
             *s = if i % 2 == 0 { 0.9 } else { -0.9 };
         }
@@ -647,26 +646,25 @@ mod tests {
         let (_anchor, decoded) = decode_wav_sequential(&audio, sr, 500, 20);
         let image_frames: Vec<_> = decoded.iter().filter(|f| f.header.com == Command::Image as u8).collect();
 
-        // Bozuk frame (x=1) header CRC hatası yüzünden listede yok — ama walk_frames resync
-        // ile ÜÇÜNCÜ frame'e (x=2) ulaşabilmeli.
+        // The corrupted frame (x=1) is not in the list due to the header CRC error — but walk_frames
+        // must be able to reach the THIRD frame (x=2) via resync.
         assert!(
             image_frames.iter().any(|f| f.header.x == 2 && f.data_crc_ok),
-            "3. tile (x=2), bozuk 2. frame'den SONRA resync ile bulunamadı — walk_frames \
-             akışa geri dönemedi (bkz. find_mid_stream_sync)"
+            "3rd tile (x=2) not found via resync AFTER the corrupted 2nd frame — walk_frames \
+             could not get back into the stream (see find_mid_stream_sync)"
         );
         assert!(
             !image_frames.iter().any(|f| f.header.x == 1),
-            "bozuk header (x=1) yine de bir frame olarak raporlandı — beklenmiyordu"
+            "corrupted header (x=1) was still reported as a frame — not expected"
         );
     }
 
-    /// Bir oturum normal şekilde bittiğinde (END sinyali), `walk_frames`'in bundan SONRAKİ
-    /// gürültüde/sessizlikte SAHTE frame'ler "bulmaya" devam ETMEMESİ gerektiğini doğrular —
-    /// bozuk-header resync eklendikten (bkz. `find_mid_stream_sync`) sonra yürüyüş END'den
-    /// sonra da devam edip arkasındaki gürültüde tesadüfen senkron-benzeri bir desene rastlayıp
-    /// geçersiz "frame"ler (hatta yanlış konuma yazılan görüntü tile'ları) üretebiliyordu
-    /// (kullanıcı geri bildirimi: "gonderici isini bitirdigi halde ... aldigi verileri de
-    /// bozuyor", "karsi tarafin gonderiminin bittigini anlayamiyoruz").
+    /// Verifies that when a session ends normally (END signal), `walk_frames` must NOT keep "finding"
+    /// SPURIOUS frames in the noise/silence AFTER it — after the corrupted-header resync was added
+    /// (see `find_mid_stream_sync`) the walk could continue past END, stumble on a sync-like pattern
+    /// by chance in the noise behind it, and produce invalid "frames" (even image tiles written to the
+    /// wrong position) (user feedback: "even though the sender has finished its job ... it also
+    /// corrupts the data it received", "we can't tell that the other side's transmission has ended").
     #[test]
     fn walk_frames_stops_cleanly_at_end_signal_and_ignores_trailing_noise() {
         let sr = 44100.0;
@@ -680,25 +678,25 @@ mod tests {
         let hdr = InfoChunk { sys: 0, com: Command::Callsign as u8, c: 0, m: 0, x: 0, y: 0, sc: 10, size: bits.len() as u16, crc: 0 };
         let mut audio = encode_session_audio(&[(hdr, bits)], sr);
 
-        // Alıcının gerçek transmisyon bittikten SONRA da dinlemeye devam ettiği canlı-mod
-        // senaryosunu simüle et: sona (deterministik, tekrarlamayan) "gürültü" ekle.
+        // Simulate the live-mode scenario where the receiver keeps listening AFTER the real
+        // transmission has ended: append (deterministic, non-repeating) "noise" at the end.
         let mut state = 12345u32;
-        let noise_len = (5.0 * sr) as usize; // 5 sn'lik gürültü
+        let noise_len = (5.0 * sr) as usize; // 5 s of noise
         for _ in 0..noise_len {
             state = state.wrapping_mul(1103515245).wrapping_add(12345);
-            let v = ((state >> 16) as i32 % 2000) as f64 / 1000.0 - 1.0; // yaklaşık [-1,1)
+            let v = ((state >> 16) as i32 % 2000) as f64 / 1000.0 - 1.0; // approximately [-1,1)
             audio.push(v);
         }
 
         let (_anchor, decoded) = decode_wav_sequential(&audio, sr, 500, 50);
 
-        // Beklenen: çağrı işareti frame'i, ardından İLK END frame'i (3× tekrarın hepsini
-        // yürümeye gerek yok — ilk yakalanan END'de yürüyüş DURMALI). Gürültüden SAHTE
-        // frame'ler eklenmemeli.
+        // Expected: the callsign frame, then the FIRST END frame (no need to walk all of the 3×
+        // repeats — the walk MUST STOP at the first END caught). No SPURIOUS frames from the noise
+        // should be added.
         assert_eq!(
             decoded.len(),
             2,
-            "beklenmeyen frame sayısı/içeriği: {:?}",
+            "unexpected frame count/content: {:?}",
             decoded.iter().map(|f| f.header.com).collect::<Vec<_>>()
         );
         assert_eq!(decoded[0].header.com, Command::Callsign as u8);

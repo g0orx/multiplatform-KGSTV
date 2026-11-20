@@ -1,13 +1,13 @@
-//! kgstv-core: KG-STV protokolünün platform-bağımsız çekirdeği.
+//! kgstv-core: platform-independent core of the KG-STV protocol.
 //!
-//! JJ0OBZ'nin orijinal KG-STV yazılımının (Windows-only) protokolünü, orijinal readme.txt'sinin
-//! çevirisi ve gerçek off-air ses kayıtları üzerinde bit-seviyesinde ters mühendislikle
-//! doğrulanmış hâliyle yeniden üreten çekirdek kütüphane. Bkz. `docs/protocol_spec.md`.
+//! Core library that reproduces the protocol of JJ0OBZ's original KG-STV software (Windows-only),
+//! as verified through a translation of its original readme.txt and bit-level reverse engineering
+//! of real off-air audio recordings. See `docs/protocol_spec.md`.
 //!
-//! Kapsam (bu sürümde): framing (preamble/sync), rate-1/2 K=7 konvolüsyonel kod, 127-bit
-//! whitening, CRC-16/AUG-CCITT, 54-bit bilgi chunk'ı (header), ve 16×16 JPEG-uyumlu görüntü
-//! blok codec'i (encode+decode) — hepsi MSK modu için gerçek kayıtla doğrulandı. 4L-FSK
-//! demodülasyonu hâlâ açık (bkz. protocol_spec.md, "Hâlâ Belirsiz" bölümleri).
+//! Scope (in this version): framing (preamble/sync), rate-1/2 K=7 convolutional code, 127-bit
+//! whitening, CRC-16/AUG-CCITT, 54-bit info chunk (header), and a 16×16 JPEG-compatible image
+//! block codec (encode+decode) — all verified against real recordings for MSK mode. 4L-FSK
+//! demodulation is still open (see protocol_spec.md, "Still Uncertain" sections).
 
 pub mod constants;
 pub mod crc;

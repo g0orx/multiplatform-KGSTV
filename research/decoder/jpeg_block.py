@@ -1,10 +1,10 @@
 """
-Standart JPEG (ITU T.81 Annex K) Huffman tabloları + zigzag + IDCT ile,
-KG-STV'nin ham (marker'sız, byte-hizasız) 16x16 blok entropy-bitstream'ini
-piksellere çevirmeyi deneyen minimal bir decoder.
+A minimal decoder that tries to convert KG-STV's raw (marker-less, non-byte-aligned)
+16x16 block entropy bitstream into pixels using the standard JPEG (ITU T.81 Annex K)
+Huffman tables + zigzag + IDCT.
 
-Bu bir DENEY: KG-STV'nin gerçekten standart tabloları kullanıp kullanmadığını
-test ediyoruz.
+This is an EXPERIMENT: we are testing whether KG-STV really uses the standard
+tables.
 """
 import numpy as np
 
@@ -198,13 +198,13 @@ def decode_16x16_block(bits, quality=10, verbose=False):
     qt_c = scale_qt(STD_CHROMA_QT, quality)
 
     results = []
-    # Gerçek off-air kayıtla (kontrollü düz-renk test görüntüleriyle: tamamen düz kırmızı/mavi
-    # bir 16x16 karonun 4 Y bloğu arasında DC "farkının" MUTLAKA sıfıra yakın olması gerekirken,
-    # bizim eski kodumuz her blokta AYNI, sabit bir "diff" değerini BİRİKTİREREK (chain ederek)
-    # her seferinde daha da büyüyen, saçma bir DC dizisi üretiyordu — örn. düz kırmızıda
-    # -58,-116,-174,-232 (aslında her blok bağımsız olarak DC=-58 taşıyor olmalıydı).
-    # Sonuç: KG-STV, standart JPEG'in aksine, bir tile içindeki 6 bloğun DC değerlerini
-    # BİRBİRİNE ZİNCİRLEMEDEN, her birini kendi başına (predictor=0) kodluyor.
+    # Verified with a real off-air recording (controlled solid-colour test images): whereas the DC
+    # "difference" between the 4 Y blocks of a completely solid red/blue 16x16 tile MUST be near zero,
+    # our old code ACCUMULATED (chained) the SAME, constant "diff" value in every block, producing
+    # an absurd DC sequence that grew larger each time — e.g. for solid red
+    # -58,-116,-174,-232 (in fact each block should have carried DC=-58 independently).
+    # Conclusion: unlike standard JPEG, KG-STV codes the DC values of the 6 blocks in a tile
+    # WITHOUT CHAINING THEM TO EACH OTHER, each one on its own (predictor=0).
     plan = [('Y',0),('Y',0),('Y',0),('Y',0),('Cr',0),('Cb',0)]
     try:
         for comp, _ in plan:

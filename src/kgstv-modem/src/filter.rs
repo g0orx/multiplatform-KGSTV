@@ -1,5 +1,5 @@
-//! Basit IIR biquad bant-geçiren filtre (RBJ cookbook formülleri). KG-STV'nin ton bandını
-//! (1200-1800Hz civarı) çevredeki gürültü/konuşmadan ayırmak için demodülasyon öncesi kullanılır.
+//! Simple IIR biquad band-pass filter (RBJ cookbook formulas). Used before demodulation to separate
+//! KG-STV's tone band (around 1200-1800Hz) from surrounding noise/speech.
 
 use std::f64::consts::PI;
 
@@ -17,7 +17,7 @@ struct Biquad {
 }
 
 impl Biquad {
-    /// Bant geçiren filtre (sabit 0dB tepe kazancı), merkez frekans `f0` (Hz), kalite `q`.
+    /// Band-pass filter (constant 0dB peak gain), centre frequency `f0` (Hz), quality `q`.
     fn bandpass(sample_rate: f64, f0: f64, q: f64) -> Self {
         let w0 = 2.0 * PI * f0 / sample_rate;
         let alpha = w0.sin() / (2.0 * q);
@@ -40,9 +40,9 @@ impl Biquad {
         }
     }
 
-    /// Alçak geçiren filtre (RBJ cookbook), kesim frekansı `fc` (Hz), kalite `q`
-    /// (0.707 ≈ Butterworth, maksimum düz geçiş bandı — basamak/kademe halinde kullanılınca
-    /// keskin bir kesim için tercih edilir).
+    /// Low-pass filter (RBJ cookbook), cutoff frequency `fc` (Hz), quality `q`
+    /// (0.707 ≈ Butterworth, maximally flat passband — preferred for a sharp cutoff when
+    /// used in cascaded stages).
     fn lowpass(sample_rate: f64, fc: f64, q: f64) -> Self {
         let w0 = 2.0 * PI * fc / sample_rate;
         let alpha = w0.sin() / (2.0 * q);
@@ -77,7 +77,7 @@ impl Biquad {
     }
 }
 
-/// `lo`..`hi` (Hz) bandını geçiren, ileri+geri (filtfilt tarzı, sıfır-faz) filtrelenmiş sinyal.
+/// Signal filtered forward+backward (filtfilt style, zero-phase) passing the `lo`..`hi` (Hz) band.
 pub fn bandpass_filtfilt(samples: &[f64], sample_rate: f64, lo: f64, hi: f64) -> Vec<f64> {
     let center = (lo + hi) / 2.0;
     let bw = hi - lo;
@@ -93,12 +93,12 @@ pub fn bandpass_filtfilt(samples: &[f64], sample_rate: f64, lo: f64, hi: f64) ->
     out
 }
 
-/// `cutoff` Hz'in altını geçiren, ileri+geri (filtfilt, sıfır-faz) filtrelenmiş sinyal — FM/FSK
-/// discriminator'ının baseband I/Q bileşenlerini süzmek için (bkz. `msk::instantaneous_freq`).
-/// İki kademeli biquad kaskadı kullanır (tek kademeye göre daha keskin kesim — komşu sembollerin
-/// sızıntısını bastırmak, yalnızca sembol içi frekans içeriğini geçirmek için önemli).
+/// Signal filtered forward+backward (filtfilt, zero-phase) passing below `cutoff` Hz — for filtering
+/// the baseband I/Q components of the FM/FSK discriminator (see `msk::instantaneous_freq`).
+/// Uses a two-stage biquad cascade (sharper cutoff than a single stage — important for suppressing
+/// leakage from neighbouring symbols and passing only the in-symbol frequency content).
 pub fn lowpass_filtfilt(samples: &[f64], sample_rate: f64, cutoff: f64) -> Vec<f64> {
-    let q = std::f64::consts::FRAC_1_SQRT_2; // Butterworth (maksimum düz geçiş bandı)
+    let q = std::f64::consts::FRAC_1_SQRT_2; // Butterworth (maximally flat passband)
     fn run_stage(x: &[f64], sample_rate: f64, cutoff: f64, q: f64) -> Vec<f64> {
         let mut f1 = Biquad::lowpass(sample_rate, cutoff, q);
         let mut f2 = Biquad::lowpass(sample_rate, cutoff, q);
@@ -127,7 +127,7 @@ mod tests {
         let f_out = bandpass_filtfilt(&out_of_band, sr, 900.0, 2200.0);
 
         let rms = |v: &[f64]| (v.iter().map(|x| x * x).sum::<f64>() / v.len() as f64).sqrt();
-        // kenar geçiş bölgesini (ilk/son birkaç yüz örnek) hesaba katmamak için orta kısmı al
+        // take the middle part to exclude the edge transition region (first/last few hundred samples)
         fn mid(v: &[f64]) -> &[f64] {
             &v[500..v.len() - 500]
         }

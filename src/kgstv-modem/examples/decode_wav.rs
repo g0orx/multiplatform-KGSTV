@@ -1,11 +1,11 @@
-//! Gerçek/senkron bir WAV kaydını uçtan uca decode eden basit CLI:
-//! ses -> sync arama -> ardışık frame yürüyüşü -> (Image ise) JPEG tile decode -> PPM görüntü.
+//! Simple CLI that decodes a real/synthetic WAV recording end to end:
+//! audio -> sync search -> sequential frame walk -> (if Image) JPEG tile decode -> PPM image.
 //!
-//! Kullanım: cargo run --example decode_wav -- <girdi.wav> [çıktı.ppm]
+//! Usage: cargo run --example decode_wav -- <input.wav> [output.ppm]
 //!
-//! Not: bu, `research/decoder/decode_session.py`'deki bağımsız-aday-tarama yaklaşımı değil,
-//! basit ardışık (sıralı) frame yürüyüşüdür — temiz/kısa kayıtlar (ör. OH2UDS kontrollü test
-//! görüntüleri) için yeterlidir; gürültülü gerçek off-air kayıtlarda senkron kaybında durur.
+//! Note: this is a simple sequential frame walk, not the independent-candidate scanning approach
+//! of `research/decoder/decode_session.py` — sufficient for clean/short recordings (e.g. the OH2UDS
+//! controlled test images); on noisy real off-air recordings it stops on loss of sync.
 
 use std::env;
 use std::process::ExitCode;
@@ -31,7 +31,7 @@ fn write_ppm(path: &str, rgb: &[[[u8; 3]; IMG_W]; IMG_H]) -> std::io::Result<()>
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("kullanım: decode_wav <girdi.wav> [çıktı.ppm]");
+        eprintln!("usage: decode_wav <input.wav> [output.ppm]");
         return ExitCode::FAILURE;
     }
     let in_path = &args[1];
@@ -40,25 +40,25 @@ fn main() -> ExitCode {
     let audio = match kgstv_modem::load_mono(in_path) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("WAV okunamadı: {e}");
+            eprintln!("could not read WAV: {e}");
             return ExitCode::FAILURE;
         }
     };
     println!(
-        "{} yüklendi: {} örnek @ {} Hz ({:.1} sn)",
+        "{} loaded: {} samples @ {} Hz ({:.1} s)",
         in_path,
         audio.samples.len(),
         audio.sample_rate,
         audio.samples.len() as f64 / audio.sample_rate
     );
 
-    // Senkron başlangıcı kayıt cihazının başlatma gecikmesi/sessizlik yüzünden kaydın ilk
-    // saniyelerinde OLMAYABİLİR — ilk 15 saniyeyi tara (gerçek kayıtlarda gözlenen ~3sn
-    // gecikmeyi rahatça kapsar).
+    // The sync start may NOT be in the first seconds of the recording due to the recorder's
+    // start-up delay/silence — scan the first 15 seconds (comfortably covers the ~3 s delay
+    // observed in real recordings).
     let coarse_search_len = ((15.0 * audio.sample_rate) as i64).min(audio.samples.len() as i64);
     let (anchor, frames) =
         kgstv_modem::decode_wav_sequential(&audio.samples, audio.sample_rate, coarse_search_len, 2000);
-    println!("senkron anchor: {anchor:.2} örnek, {} frame bulundu", frames.len());
+    println!("sync anchor: {anchor:.2} samples, {} frames found", frames.len());
 
     let mut canvas = [[[0u8; 3]; IMG_W]; IMG_H];
     let mut tiles_ok = 0usize;
@@ -91,11 +91,11 @@ fn main() -> ExitCode {
         }
     }
 
-    println!("görüntü tile'ları: {tiles_ok}/{tiles_total} decode edildi");
+    println!("image tiles: {tiles_ok}/{tiles_total} decoded");
     match write_ppm(out_path, &canvas) {
-        Ok(()) => println!("yazıldı: {out_path}"),
+        Ok(()) => println!("written: {out_path}"),
         Err(e) => {
-            eprintln!("PPM yazılamadı: {e}");
+            eprintln!("could not write PPM: {e}");
             return ExitCode::FAILURE;
         }
     }
