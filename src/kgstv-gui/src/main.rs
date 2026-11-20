@@ -100,6 +100,17 @@ enum TxMsg {
     PlaybackError(String),
 }
 
+/// The settings an encoding was made with. If any of them changes afterwards, the encoded TX
+/// audio no longer matches what the user sees and is discarded (see `discard_stale_tx_audio`).
+#[derive(Clone, PartialEq)]
+struct TxParams {
+    callsign: String,
+    message: String,
+    quality: u8,
+    conv: bool,
+    fsk4: bool,
+}
+
 /// Key under which `PersistedSettings` is stored by eframe's persistence (saved on exit and
 /// periodically, in the platform's app-data directory).
 const SETTINGS_KEY: &str = "kgstv_settings";
@@ -177,7 +188,7 @@ struct KgstvApp {
     tci_port: u16,
     /// Live decode takes its audio from the radio's TCI RX stream instead of the sound card.
     tci_rx_audio: bool,
-    /// "Play"/"Send Text" transmits through the radio over TCI (keys PTT) instead of the sound card.
+    /// "Send Image"/"Send Text" transmits through the radio over TCI (keys PTT) instead of the sound card.
     tci_tx_audio: bool,
     /// Frequency entry box (kHz) and mode selection for tuning the radio.
     tci_freq_khz: String,
@@ -258,9 +269,17 @@ struct KgstvApp {
     /// marking (instead of sample-precise tracking — since `play_blocking` may resample for the
     /// device, the sample count may not match time exactly, but the duration does).
     tx_play_started: Option<Instant>,
-    /// "📤 Send" button: automatically starts playback as well once encoding finishes (user
+    /// "📨 Send Text" / "📤 Send Image" buttons: automatically start playback as well once encoding finishes (user
     /// request: "when I press the button it should both encode and play").
     tx_auto_play_after_encode: bool,
+    /// Whether the encode currently running includes the 300 image tiles (`start_tx_encode`'s
+    /// `include_image`), and whether the finished `tx_audio` does — "📤 Send Image" must not
+    /// replay text-only audio left over from "📨 Send Text", so it re-encodes with the image first.
+    tx_encoding_includes_image: bool,
+    tx_audio_includes_image: bool,
+    /// Settings of the encode currently running, and of the finished `tx_audio`.
+    tx_encoding_params: Option<TxParams>,
+    tx_audio_params: Option<TxParams>,
     tx_rx: Option<Receiver<TxMsg>>,
 }
 
@@ -344,6 +363,10 @@ impl Default for KgstvApp {
             tx_frame_bounds: Arc::new(Vec::new()),
             tx_play_started: None,
             tx_auto_play_after_encode: false,
+            tx_encoding_includes_image: false,
+            tx_audio_includes_image: false,
+            tx_encoding_params: None,
+            tx_audio_params: None,
             tx_rx: None,
         }
     }
@@ -810,6 +833,8 @@ impl KgstvApp {
                 self.tx_texture_dirty = true;
                 self.tx_source_name = Some(name);
                 self.tx_audio = None; // audio generated with the old image is no longer valid
+                self.tx_audio_includes_image = false;
+                self.tx_audio_params = None;
                 self.tx_status = "Image loaded — ready to send.".to_string();
             }
             Err(e) => {
@@ -825,6 +850,8 @@ impl KgstvApp {
     /// text without encoding the image).
     fn start_tx_encode(&mut self, ctx: &egui::Context, include_image: bool) {
         self.tx_encoding = true;
+        self.tx_encoding_includes_image = include_image;
+        self.tx_encoding_params = Some(self.current_tx_params());
         self.tx_progress = (0, 0);
         self.tx_status = "Encoding...".to_string();
         let rgba = self.tx_image_rgba.clone();
@@ -969,7 +996,7 @@ impl KgstvApp {
         });
     }
 
-    /// Cuts off an ongoing "Play" step early (see `play_tx`/`tx_play_stop` — user request).
+    /// Cuts off an ongoing "Send Image"/"Send Text" playback early (see `play_tx`/`tx_play_stop` — user request).
     /// The actual state change (`tx_playing = false`) arrives via `TxMsg::PlaybackDone` in
     /// `drain_tx_messages` when the background thread returns — only the flag is set here.
     fn stop_tx_playback(&mut self) {
@@ -1018,7 +1045,7 @@ impl KgstvApp {
                 // and dies without sending a final message, the channel becomes "Disconnected" —
                 // previously this case was handled the SAME way as `Empty` (silently leaving
                 // the loop), i.e. `tx_encoding`/`tx_playing` stayed `true` FOREVER and
-                // "Encoding.../Playing..." stayed stuck on screen, with the "📨 Send Text"/"🔊 Play"
+                // "Encoding.../Playing..." stayed stuck on screen, with the "📨 Send Text"/"📤 Send Image"
                 // buttons permanently disabled (the user, without noticing this,
                 // kept retrying, and it seemed "not to send" until the application was
                 // probably restarted at some point). Now when the connection drops,
@@ -1054,6 +1081,8 @@ impl KgstvApp {
                     // (see encode_session_audio_cb) — anchor=0.0 is exactly right.
                     self.last_anchor = Some(0.0);
                     self.tx_audio = Some((sample_rate, samples));
+                    self.tx_audio_includes_image = self.tx_encoding_includes_image;
+                    self.tx_audio_params = self.tx_encoding_params.take();
                     self.tx_frame_bounds = frame_bounds;
                     if self.tx_auto_play_after_encode {
                         self.tx_auto_play_after_encode = false;
@@ -1451,6 +1480,32 @@ impl KgstvApp {
         }
     }
 
+    fn current_tx_params(&self) -> TxParams {
+        TxParams {
+            callsign: self.tx_callsign.clone(),
+            message: self.tx_message.clone(),
+            quality: self.tx_quality,
+            conv: self.tx_conv,
+            fsk4: self.tx_fsk4,
+        }
+    }
+
+    /// Discards the encoded TX audio if the callsign, message, Scale, CONV or 4L-FSK setting has
+    /// changed since it was encoded (changing the image already discards it in `load_tx_image`),
+    /// so "📤 Send Image" / "💾 Save WAV" never use an outdated encoding — Send Image then
+    /// re-encodes automatically. Not done during playback: the progress display reads `tx_audio`.
+    fn discard_stale_tx_audio(&mut self) {
+        if self.tx_audio.is_none() || self.tx_playing {
+            return;
+        }
+        if self.tx_audio_params.as_ref() != Some(&self.current_tx_params()) {
+            self.tx_audio = None;
+            self.tx_audio_includes_image = false;
+            self.tx_audio_params = None;
+            self.tx_status = "Settings changed — the image will be re-encoded when sent.".to_string();
+        }
+    }
+
     fn apply_persisted_settings(&mut self, s: PersistedSettings) {
         self.tx_callsign = s.tx_callsign;
         self.tx_message = s.tx_message;
@@ -1475,6 +1530,7 @@ impl eframe::App for KgstvApp {
         let ctx = ui.ctx().clone();
         self.drain_messages();
         self.drain_tx_messages(&ctx);
+        self.discard_stale_tx_audio();
 
         self.maybe_kick_live_decode(&ctx);
         self.maybe_kick_wav_sim_decode(&ctx);
@@ -1580,14 +1636,28 @@ impl eframe::App for KgstvApp {
                         {
                             self.save_tx_wav();
                         }
+                        // Sends the full transmission: callsign + message (if filled in) + the 300 image
+                        // tiles. Plays the encoded audio if it already includes the image; otherwise
+                        // (nothing encoded yet, or only text from "📨 Send Text") it encodes with the
+                        // image first and then plays automatically.
+                        let image_audio_ready = self.tx_audio.is_some() && self.tx_audio_includes_image;
                         if ui
                             .add_enabled(
-                                self.tx_audio.is_some() && !self.tx_encoding && !self.tx_playing,
-                                egui::Button::new("🔊 Play"),
+                                !self.tx_encoding
+                                    && !self.tx_playing
+                                    && (image_audio_ready || self.tx_source_name.is_some()),
+                                egui::Button::new("📤 Send Image"),
                             )
+                            .on_hover_text("Transmits the image and the text (callsign and message).")
+                            .on_disabled_hover_text("Choose an image first.")
                             .clicked()
                         {
-                            self.play_tx(&ctx);
+                            if image_audio_ready {
+                                self.play_tx(&ctx);
+                            } else {
+                                self.tx_auto_play_after_encode = true;
+                                self.start_tx_encode(&ctx, true);
+                            }
                         }
                         // A transmission (especially a full image) can take minutes — user
                         // request: a button that can cut playback off early.
@@ -1678,13 +1748,13 @@ impl eframe::App for KgstvApp {
                     ui.text_edit_multiline(&mut self.tx_message);
                     // User request: "add a send button next to the text box..
                     // when I press the button it should both encode and play" — a shortcut that reduces the
-                    // "⚙ Encode" + "🔊 Play" pair above to a SINGLE step. Later correction:
+                    // "⚙ Encode" + "📤 Send Image" pair above to a SINGLE step. Later correction:
                     // "the send next to the text box should send only the text" — this button
                     // does NOT INCLUDE the 300-tile image, it only encodes the callsign (if any) + text
                     // (`include_image=false`) — a quick text-only send shortcut.
                     if ui
                         .add_enabled(!self.tx_encoding && !self.tx_playing, egui::Button::new("📨 Send Text"))
-                        .on_hover_text("Sends only the callsign and message (not the image). Use ⚙ Encode then 🔊 Play to send the image.")
+                        .on_hover_text("Sends only the callsign and message (not the image). Use 📤 Send Image to send the image as well.")
                         .clicked()
                     {
                         self.tx_auto_play_after_encode = true;
