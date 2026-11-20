@@ -24,6 +24,7 @@ original `readme.txt` + real off-air audio recordings (4 different stations: TA4
 | **Rust audio I/O + MSK modulator/demodulator** (`kgstv-modem`) | ✅ Verified end to end: 300/300 tiles decoded with zero bit errors from a real OH2UDS MSK recording |
 | **4L-FSK MLSD/Viterbi demodulator** (`kgstv-modem::fsk4`) | ✅ Solved — 6-state CPM phase-trellis Viterbi + fine timing-shift scan; 96-99.7% tile success rate on real recordings (a big leap from the earlier ~80% symbol-accuracy bottleneck) |
 | **Desktop GUI** (`kgstv-gui`, egui/eframe) | ✅ Single code base for Win/Linux/macOS — **RX**: open WAV, progressive tile drawing, frame log, live (microphone) decode, eye diagram, MSK+4L-FSK automatic; **TX**: send image/text (MSK or 4L-FSK), save as WAV or play through the speaker |
+| **TCI radio control + audio** (`kgstv-modem::tci`) | ✅ Connect to a TCI server (ExpertSDR, piHPSDR, deskHPSDR ...), show/tune frequency and mode, receive audio from the radio for live decode, transmit through the radio (keys PTT, TX audio paced by TX_CHRONO); verified against a mock TCI server end to end |
 | iOS/Android UI | ⏳ Not started yet |
 
 ## Directory Structure
@@ -52,7 +53,8 @@ original `readme.txt` + real off-air audio recordings (4 different stations: TA4
   (`sync`), top-level TX/RX session API (`session`; header/sync always MSK + data chunk
   MSK/4L-FSK automatically according to `hdr.m`, including encoding with a progress callback),
   continuous sample capture from the default microphone/soundcard + playback through the speaker
-  (`live`, via `cpal`).
+  (`live`, via `cpal`), and a TCI client (`tci`) for radio control plus RX/TX audio over
+  WebSocket.
   `examples/decode_wav.rs`: a CLI tool that decodes a WAV file end to end and produces a PPM image.
 - `src/kgstv-gui/` — desktop GUI (cargo workspace member, egui/eframe), RX and TX modes:
   **RX** — open a WAV file (native file picker, `rfd`) or start live (microphone) decoding,
@@ -61,6 +63,8 @@ original `readme.txt` + real off-air audio recordings (4 different stations: TA4
   `image` crate) to 320×240 and encodes it into 300 JPEG tiles + an optional callsign/text
   (MSK or 4L-FSK modulation selectable), saves it as a WAV or plays it directly through the
   speaker. In both modes an eye diagram is shown for assessing signal quality/timing.
+  A **📻 Radio (TCI)** section in both modes connects to a TCI server (default port 40001),
+  tunes the radio, and lets live decode and transmit use the radio's audio instead of a sound card.
   Single code base for Windows/Linux/macOS.
 
 ## Development

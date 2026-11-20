@@ -129,6 +129,18 @@ struct KgstvApp {
     input_gain: f32,
     output_gain: f32,
 
+    // Radio control + audio over TCI (ExpertSDR / piHPSDR / deskHPSDR ...).
+    tci: Option<kgstv_modem::TciClient>,
+    tci_host: String,
+    tci_port: u16,
+    /// Live decode takes its audio from the radio's TCI RX stream instead of the sound card.
+    tci_rx_audio: bool,
+    /// "Play"/"Send" transmits through the radio over TCI (keys PTT) instead of the sound card.
+    tci_tx_audio: bool,
+    /// Frequency entry box (kHz) and mode selection for tuning the radio.
+    tci_freq_khz: String,
+    tci_mode: String,
+
     // Live decode.
     live: Option<LiveCapture>,
     last_live_decode: Instant,
@@ -240,6 +252,13 @@ impl Default for KgstvApp {
             selected_output_device: None,
             input_gain: 1.0,
             output_gain: 1.0,
+            tci: None,
+            tci_host: "127.0.0.1".to_string(),
+            tci_port: kgstv_modem::TCI_DEFAULT_PORT,
+            tci_rx_audio: false,
+            tci_tx_audio: false,
+            tci_freq_khz: "14233.000".to_string(),
+            tci_mode: "usb".to_string(),
             live: None,
             last_live_decode: Instant::now(),
             live_frames_applied: 0,
@@ -334,16 +353,155 @@ impl KgstvApp {
         });
     }
 
+    /// "📻 Radio (TCI)" section, shown in both the RX and TX panels: connect to a TCI server,
+    /// show the radio's frequency/mode/TX state, tune it, and choose TCI as the RX/TX audio path.
+    fn tci_panel(&mut self, ui: &mut egui::Ui) {
+        ui.collapsing("📻 Radio (TCI)", |ui| {
+            let status = self.tci.as_ref().map(|c| c.status());
+            let connected = status.as_ref().is_some_and(|s| s.state == kgstv_modem::TciState::Connected);
+            let connecting = status.as_ref().is_some_and(|s| s.state == kgstv_modem::TciState::Connecting);
+            ui.horizontal(|ui| {
+                ui.label("Host");
+                ui.add_enabled(
+                    self.tci.is_none(),
+                    egui::TextEdit::singleline(&mut self.tci_host).desired_width(110.0),
+                );
+                ui.label("Port");
+                ui.add_enabled(self.tci.is_none(), egui::DragValue::new(&mut self.tci_port).range(1..=65535));
+                if self.tci.is_none() {
+                    if ui.button("Connect").clicked() {
+                        self.tci = Some(kgstv_modem::TciClient::connect(&self.tci_host, self.tci_port));
+                    }
+                } else if ui.button(if connecting { "Cancel" } else { "Disconnect" }).clicked() {
+                    self.disconnect_tci();
+                }
+            });
+            match status.as_ref().map(|s| &s.state) {
+                None => {
+                    ui.label("Not connected.");
+                }
+                Some(kgstv_modem::TciState::Connecting) => {
+                    ui.label("Connecting...");
+                }
+                Some(kgstv_modem::TciState::Disconnected(reason)) => {
+                    let reason = if reason.is_empty() { "Disconnected." } else { reason.as_str() };
+                    ui.colored_label(egui::Color32::LIGHT_RED, reason);
+                    if ui.button("Clear").clicked() {
+                        self.disconnect_tci();
+                    }
+                }
+                Some(kgstv_modem::TciState::Connected) => {
+                    let st = status.as_ref().unwrap();
+                    ui.label(format!(
+                        "Connected: {}{}",
+                        st.device.as_deref().unwrap_or("radio"),
+                        st.protocol.as_deref().map(|p| format!(" ({p})")).unwrap_or_default()
+                    ));
+                    let freq = st
+                        .frequency_hz
+                        .map(|f| format!("{:.3} kHz", f as f64 / 1000.0))
+                        .unwrap_or_else(|| "? kHz".to_string());
+                    let mode = st.modulation.as_deref().unwrap_or("?").to_uppercase();
+                    let txt = egui::RichText::new(format!("{freq}   {mode}")).strong();
+                    ui.horizontal(|ui| {
+                        ui.label(txt);
+                        if st.transmitting {
+                            ui.colored_label(egui::Color32::RED, egui::RichText::new("● TX").strong());
+                        }
+                    });
+                }
+            }
+            ui.add_enabled_ui(connected, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.tci_freq_khz).desired_width(90.0));
+                    ui.label("kHz");
+                    if ui.button("Tune").clicked() {
+                        match self.tci_freq_khz.trim().replace(',', ".").parse::<f64>() {
+                            Ok(khz) if khz > 0.0 => {
+                                if let Some(c) = &self.tci {
+                                    c.set_frequency((khz * 1000.0).round() as u64);
+                                }
+                            }
+                            _ => self.status = format!("Invalid frequency: {}", self.tci_freq_khz),
+                        }
+                    }
+                    egui::ComboBox::from_id_salt("tci_mode")
+                        .selected_text(self.tci_mode.to_uppercase())
+                        .width(70.0)
+                        .show_ui(ui, |ui| {
+                            for m in ["usb", "digu", "lsb", "digl"] {
+                                ui.selectable_value(&mut self.tci_mode, m.to_string(), m.to_uppercase());
+                            }
+                        });
+                    if ui.button("Set mode").clicked() {
+                        if let Some(c) = &self.tci {
+                            c.set_modulation(&self.tci_mode);
+                        }
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("SSTV:");
+                    for khz in [3733.0, 7173.0, 14233.0, 21340.0, 28680.0] {
+                        if ui.small_button(format!("{khz:.0}")).clicked() {
+                            self.tci_freq_khz = format!("{khz:.3}");
+                            if let Some(c) = &self.tci {
+                                c.set_frequency((khz * 1000.0) as u64);
+                            }
+                        }
+                    }
+                });
+            });
+            // Switching the RX audio source while live decoding is running restarts the capture on
+            // the new source (the old buffer/anchor belong to the old source, so decode state resets).
+            let rx_toggled = ui
+                .checkbox(&mut self.tci_rx_audio, "Receive audio from the radio (TCI)")
+                .on_hover_text("Live decode takes its audio from the radio over TCI instead of the sound card")
+                .changed();
+            if rx_toggled && self.live.is_some() {
+                self.live = None;
+                self.toggle_live(ui.ctx());
+            }
+            if self.tci_rx_audio && !connected {
+                ui.weak("  (connect to the radio first)");
+            }
+            ui.add_enabled(
+                !self.tx_playing,
+                egui::Checkbox::new(&mut self.tci_tx_audio, "Transmit through the radio (TCI, keys PTT)"),
+            )
+            .on_disabled_hover_text("Can't change the transmit path while transmitting");
+        });
+    }
+
+    fn disconnect_tci(&mut self) {
+        if let Some(c) = self.tci.take() {
+            c.disconnect();
+        }
+        if self.tci_rx_audio && self.live.is_some() {
+            self.live = None;
+            self.status = "Live decoding stopped (TCI disconnected).".to_string();
+        }
+    }
+
     fn toggle_live(&mut self, ctx: &egui::Context) {
         if self.live.is_some() {
             self.live = None;
             self.status = "Live decoding stopped.".to_string();
             return;
         }
-        match LiveCapture::start(LIVE_BUFFER_SECONDS, self.selected_input_device.as_deref(), self.input_gain) {
+        let started = if self.tci_rx_audio {
+            match &self.tci {
+                Some(c) => c.start_rx_audio(LIVE_BUFFER_SECONDS, self.input_gain),
+                None => Err("TCI audio selected but not connected to a radio".to_string()),
+            }
+        } else {
+            LiveCapture::start(LIVE_BUFFER_SECONDS, self.selected_input_device.as_deref(), self.input_gain)
+        };
+        match started {
             Ok(cap) => {
-                self.status = format!("Listening live @ {:.0} Hz — waiting...", cap.sample_rate);
-                self.current_file = Some("(live input)".to_string());
+                let source = if self.tci_rx_audio { "radio (TCI)" } else { "sound card" };
+                self.status = format!("Listening live from {source} @ {:.0} Hz — waiting...", cap.sample_rate);
+                self.current_file =
+                    Some(if self.tci_rx_audio { "(TCI radio audio)" } else { "(live input)" }.to_string());
                 self.reset_decode_state();
                 self.wav_sim = None; // live mode stops real-time WAV playback
                 self.live = Some(cap);
@@ -734,8 +892,19 @@ impl KgstvApp {
         if self.tx_playing {
             return;
         }
+        let tci = if self.tci_tx_audio {
+            match &self.tci {
+                Some(c) if c.is_connected() => Some(c.clone()),
+                _ => {
+                    self.tx_status = "Transmit via TCI selected but not connected to a radio.".to_string();
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         self.tx_playing = true;
-        self.tx_status = "Playing...".to_string();
+        self.tx_status = if tci.is_some() { "Transmitting via TCI..." } else { "Playing..." }.to_string();
         self.tx_play_started = Some(Instant::now());
         let stop = Arc::new(AtomicBool::new(false));
         self.tx_play_stop = Some(stop.clone());
@@ -745,7 +914,11 @@ impl KgstvApp {
         let device = self.selected_output_device.clone();
         let gain = self.output_gain;
         std::thread::spawn(move || {
-            let msg = match kgstv_modem::play_blocking(&samples, sr, device.as_deref(), gain, Some(stop)) {
+            let result = match &tci {
+                Some(c) => c.transmit_blocking(&samples, sr, gain, Some(stop)),
+                None => kgstv_modem::play_blocking(&samples, sr, device.as_deref(), gain, Some(stop)),
+            };
+            let msg = match result {
                 Ok(()) => TxMsg::PlaybackDone,
                 Err(e) => TxMsg::PlaybackError(e),
             };
@@ -1231,6 +1404,8 @@ impl eframe::App for KgstvApp {
         if self.live.is_some() || self.wav_sim.is_some() || self.tx_encoding || self.tx_playing {
             // Trigger regular redraws during live/real-time playback/encoding/playing.
             ctx.request_repaint_after(Duration::from_millis(150));
+        } else if self.tci.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(500));
         }
 
         if self.texture_dirty {
@@ -1371,6 +1546,7 @@ impl eframe::App for KgstvApp {
                         ui.label(egui::RichText::new(format!("💬 Text: {text}")).strong());
                     }
                     ui.separator();
+                    self.tci_panel(ui);
                     ui.collapsing("🎚 Audio Input", |ui| {
                         ui.horizontal(|ui| {
                             let devices = self.input_devices.clone();
@@ -1460,6 +1636,7 @@ impl eframe::App for KgstvApp {
                     ui.separator();
                     ui.label("300 tiles (20×15), 1200 baud MSK — same framing as real KG-STV.");
                     ui.separator();
+                    self.tci_panel(ui);
                     ui.collapsing("🎚 Audio Output", |ui| {
                         ui.horizontal(|ui| {
                             let devices = self.output_devices.clone();

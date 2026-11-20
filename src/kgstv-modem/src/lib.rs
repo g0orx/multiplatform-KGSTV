@@ -17,6 +17,7 @@ pub mod discriminator;
 pub mod sync;
 pub mod session;
 pub mod live;
+pub mod tci;
 
 pub use wav::{load_mono, save_mono, AudioBuffer};
 pub use filter::{bandpass_filtfilt, lowpass_filtfilt};
@@ -32,3 +33,4 @@ pub use live::{
     AudioDeviceInfo, default_input_device_name, default_output_device_name, list_input_devices, list_output_devices,
     play_blocking, LiveCapture, PlaybackSim,
 };
+pub use tci::{TciClient, TciState, TciStatus, TCI_AUDIO_SAMPLE_RATE, TCI_DEFAULT_PORT};

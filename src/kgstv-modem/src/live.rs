@@ -13,8 +13,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 /// Sample buffer that keeps growing but is trimmed from the front once it exceeds a certain
 /// duration (ring-buffer-like). Once `max_samples` is exceeded the oldest samples are dropped — so memory does not grow unbounded.
-struct RingBuffer {
-    data: VecDeque<f64>,
+pub(crate) struct RingBuffer {
+    pub(crate) data: VecDeque<f64>,
     max_samples: usize,
     /// The ABSOLUTE sample index of `data[0]` (counted from the start of the session, as if the buffer
     /// had never been trimmed) — i.e. the total number of samples dropped from the front so far. Once
@@ -27,7 +27,11 @@ struct RingBuffer {
 }
 
 impl RingBuffer {
-    fn push_slice(&mut self, samples: &[f64]) {
+    pub(crate) fn new(max_samples: usize) -> Self {
+        RingBuffer { data: VecDeque::new(), max_samples, front_absolute_index: 0 }
+    }
+
+    pub(crate) fn push_slice(&mut self, samples: &[f64]) {
         self.data.extend(samples.iter().copied());
         while self.data.len() > self.max_samples {
             self.data.pop_front();
@@ -119,10 +123,28 @@ pub struct LiveCapture {
     /// Peak amplitude of the most recently captured chunk (from 0.0 upward, typically ~0-1.5) —
     /// the GUI's VU meter reads this periodically.
     level: Arc<Mutex<f32>>,
-    _stream: cpal::Stream,
+    _source: CaptureSource,
+}
+
+/// What feeds a `LiveCapture`: a local sound card (cpal stream) or a radio's TCI RX audio stream.
+/// Held only to keep the source alive — dropping it stops the stream.
+pub(crate) enum CaptureSource {
+    Cpal(#[allow(dead_code)] cpal::Stream),
+    Tci(#[allow(dead_code)] crate::tci::TciRxGuard),
 }
 
 impl LiveCapture {
+    /// Builds a capture whose buffer is filled by some other source (used by `tci`).
+    pub(crate) fn from_parts(
+        sample_rate: f64,
+        buffer: Arc<Mutex<RingBuffer>>,
+        gain: Arc<Mutex<f32>>,
+        level: Arc<Mutex<f32>>,
+        source: CaptureSource,
+    ) -> Self {
+        LiveCapture { sample_rate, buffer, gain, level, _source: source }
+    }
+
     /// Starts capturing from the given (or, if `None`, the default) input device.
     /// `max_seconds`: maximum duration to keep in the buffer (older samples are dropped automatically).
     /// `initial_gain`: multiplier applied to the samples (1.0 = no change) — can be changed live
@@ -186,7 +208,7 @@ impl LiveCapture {
 
         stream.play().map_err(|e| format!("Could not start audio stream: {e}"))?;
 
-        Ok(LiveCapture { sample_rate, buffer, gain, level, _stream: stream })
+        Ok(LiveCapture { sample_rate, buffer, gain, level, _source: CaptureSource::Cpal(stream) })
     }
 
     /// Returns a copy of the samples accumulated so far (for decoding).
@@ -420,7 +442,7 @@ pub fn play_blocking(
 /// Resampling by simple linear interpolation (`from_sr` Hz -> `to_sr` Hz). Not a high-quality
 /// resampler, but sufficient for KG-STV's narrow band (500-2500Hz), purely for playback through
 /// the speaker — WAV recording/decoding always stays at the original (non-resampled) rate.
-fn resample_linear(samples: &[f64], from_sr: f64, to_sr: f64) -> Vec<f64> {
+pub(crate) fn resample_linear(samples: &[f64], from_sr: f64, to_sr: f64) -> Vec<f64> {
     if samples.is_empty() || (from_sr - to_sr).abs() < 1e-6 {
         return samples.to_vec();
     }
@@ -454,7 +476,7 @@ fn pull_upmixed<T: Copy + Default>(
     }
 }
 
-fn push_downmixed<T: Copy>(
+pub(crate) fn push_downmixed<T: Copy>(
     buffer: &Arc<Mutex<RingBuffer>>,
     gain: &Arc<Mutex<f32>>,
     level: &Arc<Mutex<f32>>,
