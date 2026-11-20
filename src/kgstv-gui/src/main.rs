@@ -202,6 +202,9 @@ struct KgstvApp {
     /// Frequency entry box (kHz) and mode selection for tuning the radio.
     tci_freq_khz: String,
     tci_mode: String,
+    /// Why the last TCI connection ended (connection lost or could not connect) — shown in the
+    /// TCI panel after the client has been dropped automatically (see `check_tci_connection`).
+    tci_last_error: Option<String>,
 
     // Live decode.
     live: Option<LiveCapture>,
@@ -329,6 +332,7 @@ impl Default for KgstvApp {
             tci_tx_audio: false,
             tci_freq_khz: "14233.000".to_string(),
             tci_mode: "usb".to_string(),
+            tci_last_error: None,
             live: None,
             last_live_decode: Instant::now(),
             live_frames_applied: 0,
@@ -444,6 +448,7 @@ impl KgstvApp {
                 ui.add_enabled(self.tci.is_none(), egui::DragValue::new(&mut self.tci_port).range(1..=65535));
                 if self.tci.is_none() {
                     if ui.button("Connect").clicked() {
+                        self.tci_last_error = None;
                         self.tci = Some(kgstv_modem::TciClient::connect(&self.tci_host, self.tci_port));
                     }
                 } else if ui.button(if connecting { "Cancel" } else { "Disconnect" }).clicked() {
@@ -451,18 +456,20 @@ impl KgstvApp {
                 }
             });
             match status.as_ref().map(|s| &s.state) {
-                None => {
-                    ui.label("Not connected.");
-                }
+                None => match &self.tci_last_error {
+                    Some(reason) => {
+                        ui.colored_label(egui::Color32::LIGHT_RED, format!("Disconnected: {reason}"));
+                    }
+                    None => {
+                        ui.label("Not connected.");
+                    }
+                },
                 Some(kgstv_modem::TciState::Connecting) => {
                     ui.label("Connecting...");
                 }
-                Some(kgstv_modem::TciState::Disconnected(reason)) => {
-                    let reason = if reason.is_empty() { "Disconnected." } else { reason.as_str() };
-                    ui.colored_label(egui::Color32::LIGHT_RED, reason);
-                    if ui.button("Clear").clicked() {
-                        self.disconnect_tci();
-                    }
+                // Normally never seen: `check_tci_connection` drops the client in the same frame.
+                Some(kgstv_modem::TciState::Disconnected(_)) => {
+                    ui.label("Disconnected.");
                 }
                 Some(kgstv_modem::TciState::Connected) => {
                     let st = status.as_ref().unwrap();
@@ -563,6 +570,24 @@ impl KgstvApp {
             )
             .on_disabled_hover_text("Can't change the transmit path while transmitting");
         });
+    }
+
+    /// Called every frame (whether or not the TCI panel is open): when the TCI connection is lost
+    /// (server closed it, socket error) or could not be established, disconnects automatically —
+    /// drops the client, stops live decoding that was fed from the radio — and keeps the reason
+    /// for the TCI panel. A transmission in progress ends by itself with a "connection lost" error
+    /// (see `TciClient::transmit_blocking`).
+    fn check_tci_connection(&mut self) {
+        let Some(c) = &self.tci else { return };
+        if let kgstv_modem::TciState::Disconnected(reason) = c.status().state {
+            let reason = if reason.is_empty() { "connection closed".to_string() } else { reason };
+            let was_live = self.tci_rx_audio && self.live.is_some();
+            self.disconnect_tci();
+            if was_live {
+                self.status = format!("Live decoding stopped — TCI connection lost: {reason}");
+            }
+            self.tci_last_error = Some(reason);
+        }
     }
 
     fn disconnect_tci(&mut self) {
@@ -1570,6 +1595,7 @@ impl eframe::App for KgstvApp {
         self.drain_messages();
         self.drain_tx_messages(&ctx);
         self.discard_stale_tx_audio();
+        self.check_tci_connection();
 
         self.maybe_kick_live_decode(&ctx);
         self.maybe_kick_wav_sim_decode(&ctx);
