@@ -118,8 +118,8 @@ struct KgstvApp {
     last_text: Option<String>,
 
     // Audio input/output device selection + level control (shared by RX and TX).
-    input_devices: Vec<String>,
-    output_devices: Vec<String>,
+    input_devices: Vec<kgstv_modem::AudioDeviceInfo>,
+    output_devices: Vec<kgstv_modem::AudioDeviceInfo>,
     /// `None` = system default.
     selected_input_device: Option<String>,
     selected_output_device: Option<String>,
@@ -236,8 +236,8 @@ impl Default for KgstvApp {
             last_text: None,
             input_devices: kgstv_modem::list_input_devices(),
             output_devices: kgstv_modem::list_output_devices(),
-            selected_input_device: kgstv_modem::default_input_device_name(),
-            selected_output_device: kgstv_modem::default_output_device_name(),
+            selected_input_device: None,
+            selected_output_device: None,
             input_gain: 1.0,
             output_gain: 1.0,
             live: None,
@@ -1051,6 +1051,15 @@ fn run_decode(
     ctx.request_repaint();
 }
 
+/// Dropdown text for the selected audio device: `None` = system default; an id that is no longer
+/// in the list (device unplugged) falls back to showing the raw id.
+fn device_label(devices: &[kgstv_modem::AudioDeviceInfo], selected: Option<&str>) -> String {
+    match selected {
+        None => "(system default)".to_string(),
+        Some(id) => devices.iter().find(|d| d.id == id).map(|d| d.label.clone()).unwrap_or_else(|| id.to_string()),
+    }
+}
+
 /// Converts ASCII text into an MSB-first bit sequence (for callsign/text frames).
 fn ascii_to_bits(s: &str) -> Vec<u8> {
     let mut bits = Vec::with_capacity(s.len() * 8);
@@ -1366,11 +1375,11 @@ impl eframe::App for KgstvApp {
                         ui.horizontal(|ui| {
                             let devices = self.input_devices.clone();
                             egui::ComboBox::from_label("Device")
-                                .selected_text(self.selected_input_device.as_deref().unwrap_or("(system default)"))
+                                .selected_text(device_label(&devices, self.selected_input_device.as_deref()))
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(&mut self.selected_input_device, None, "(system default)");
                                     for d in &devices {
-                                        ui.selectable_value(&mut self.selected_input_device, Some(d.clone()), d);
+                                        ui.selectable_value(&mut self.selected_input_device, Some(d.id.clone()), &d.label);
                                     }
                                 });
                             // Rescan the device list — so a USB sound card plugged in/removed later
@@ -1380,7 +1389,7 @@ impl eframe::App for KgstvApp {
                             if ui.button("🔄").on_hover_text("Rescan devices").clicked() {
                                 self.input_devices = kgstv_modem::list_input_devices();
                                 if let Some(sel) = &self.selected_input_device {
-                                    if !self.input_devices.contains(sel) {
+                                    if !self.input_devices.iter().any(|d| &d.id == sel) {
                                         self.selected_input_device = None;
                                     }
                                 }
@@ -1455,18 +1464,18 @@ impl eframe::App for KgstvApp {
                         ui.horizontal(|ui| {
                             let devices = self.output_devices.clone();
                             egui::ComboBox::from_label("Device")
-                                .selected_text(self.selected_output_device.as_deref().unwrap_or("(system default)"))
+                                .selected_text(device_label(&devices, self.selected_output_device.as_deref()))
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(&mut self.selected_output_device, None, "(system default)");
                                     for d in &devices {
-                                        ui.selectable_value(&mut self.selected_output_device, Some(d.clone()), d);
+                                        ui.selectable_value(&mut self.selected_output_device, Some(d.id.clone()), &d.label);
                                     }
                                 });
                             // See the comment on the same button on the input side.
                             if ui.button("🔄").on_hover_text("Rescan devices").clicked() {
                                 self.output_devices = kgstv_modem::list_output_devices();
                                 if let Some(sel) = &self.selected_output_device {
-                                    if !self.output_devices.contains(sel) {
+                                    if !self.output_devices.iter().any(|d| &d.id == sel) {
                                         self.selected_output_device = None;
                                     }
                                 }

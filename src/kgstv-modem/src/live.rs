@@ -36,26 +36,46 @@ impl RingBuffer {
     }
 }
 
-/// Lists the names of the system's audio input devices (for populating a dropdown).
-/// (cpal 0.18: the device name comes via `Display`/`to_string()`, not `Device::name()`.)
-pub fn list_input_devices() -> Vec<String> {
-    let host = cpal::default_host();
-    match host.input_devices() {
-        Ok(it) => it.map(|d| d.to_string()).collect(),
+/// An audio device as offered to the user: `id` is cpal's unique, stable device identifier
+/// (e.g. `alsa:plughw:CARD=E900Plus,DEV=0`) used to find the device again; `label` is a
+/// human-readable name for a dropdown.
+///
+/// Devices must be identified by `id`, NOT by display name: names are not unique (one ALSA card
+/// typically appears as several entries — `hw`, `plughw`, `sysdefault`, `front`, `dsnoop` — all
+/// with the same name), and the default device's name ("Default Audio Device") does not even
+/// match the name under which the same device appears in the enumerated list, so a by-name
+/// lookup of the default device always failed ("Input device not found: Default Audio Device").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioDeviceInfo {
+    pub id: String,
+    pub label: String,
+}
+
+fn device_info(d: &cpal::Device) -> Option<AudioDeviceInfo> {
+    // (cpal 0.18: the device name comes via `Display`/`to_string()`, not `Device::name()`.)
+    let id = d.id().ok()?.to_string();
+    // The host prefix ("alsa:", "wasapi:" ...) adds nothing for the user — show only the rest.
+    let short_id = id.split_once(':').map(|(_, rest)| rest).unwrap_or(&id);
+    Some(AudioDeviceInfo { label: format!("{d} [{short_id}]"), id })
+}
+
+/// Lists the system's audio input devices (for populating a dropdown).
+pub fn list_input_devices() -> Vec<AudioDeviceInfo> {
+    match cpal::default_host().input_devices() {
+        Ok(it) => it.filter_map(|d| device_info(&d)).collect(),
         Err(_) => Vec::new(),
     }
 }
 
-/// Lists the names of the system's audio output devices (for populating a dropdown).
-pub fn list_output_devices() -> Vec<String> {
-    let host = cpal::default_host();
-    match host.output_devices() {
-        Ok(it) => it.map(|d| d.to_string()).collect(),
+/// Lists the system's audio output devices (for populating a dropdown).
+pub fn list_output_devices() -> Vec<AudioDeviceInfo> {
+    match cpal::default_host().output_devices() {
+        Ok(it) => it.filter_map(|d| device_info(&d)).collect(),
         Err(_) => Vec::new(),
     }
 }
 
-/// Name of the default input device (for "which one should be selected" in the dropdown).
+/// Name of the default input device.
 pub fn default_input_device_name() -> Option<String> {
     cpal::default_host().default_input_device().map(|d| d.to_string())
 }
@@ -65,26 +85,28 @@ pub fn default_output_device_name() -> Option<String> {
     cpal::default_host().default_output_device().map(|d| d.to_string())
 }
 
-fn find_input_device(name: Option<&str>) -> Result<cpal::Device, String> {
+/// `id`: an `AudioDeviceInfo::id`, or `None` for the system default.
+fn find_input_device(id: Option<&str>) -> Result<cpal::Device, String> {
     let host = cpal::default_host();
-    match name {
-        Some(n) => host
+    match id {
+        Some(id) => host
             .input_devices()
             .map_err(|e| format!("Could not list input devices: {e}"))?
-            .find(|d| d.to_string() == n)
-            .ok_or_else(|| format!("Input device not found: {n}")),
+            .find(|d| d.id().map(|i| i.to_string() == id).unwrap_or(false))
+            .ok_or_else(|| format!("Input device not found: {id}")),
         None => host.default_input_device().ok_or_else(|| "Default audio input device not found".to_string()),
     }
 }
 
-fn find_output_device(name: Option<&str>) -> Result<cpal::Device, String> {
+/// `id`: an `AudioDeviceInfo::id`, or `None` for the system default.
+fn find_output_device(id: Option<&str>) -> Result<cpal::Device, String> {
     let host = cpal::default_host();
-    match name {
-        Some(n) => host
+    match id {
+        Some(id) => host
             .output_devices()
             .map_err(|e| format!("Could not list output devices: {e}"))?
-            .find(|d| d.to_string() == n)
-            .ok_or_else(|| format!("Output device not found: {n}")),
+            .find(|d| d.id().map(|i| i.to_string() == id).unwrap_or(false))
+            .ok_or_else(|| format!("Output device not found: {id}")),
         None => host.default_output_device().ok_or_else(|| "Default audio output device not found".to_string()),
     }
 }

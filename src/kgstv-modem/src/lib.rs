@@ -29,6 +29,6 @@ pub use session::{
     encode_session_audio, encode_session_audio_cb, FrameResult,
 };
 pub use live::{
-    default_input_device_name, default_output_device_name, list_input_devices, list_output_devices,
+    AudioDeviceInfo, default_input_device_name, default_output_device_name, list_input_devices, list_output_devices,
     play_blocking, LiveCapture, PlaybackSim,
 };
