@@ -115,7 +115,8 @@ struct TxParams {
 /// periodically, in the platform's app-data directory).
 const SETTINGS_KEY: &str = "kgstv_settings";
 
-/// User settings remembered between restarts: TX options, callsign/message and TCI options.
+/// User settings remembered between restarts: TX options, callsign/message, TCI options, and the
+/// audio devices (by unique cpal device ID, `None` = system default) and level sliders.
 /// `#[serde(default)]` keeps older/newer settings files loadable — missing fields fall back to
 /// the `Default` values (which mirror `KgstvApp::default()`).
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -132,6 +133,10 @@ struct PersistedSettings {
     tci_tx_audio: bool,
     tci_freq_khz: String,
     tci_mode: String,
+    input_device: Option<String>,
+    output_device: Option<String>,
+    input_gain: f32,
+    output_gain: f32,
 }
 
 impl Default for PersistedSettings {
@@ -149,6 +154,10 @@ impl Default for PersistedSettings {
             tci_tx_audio: false,
             tci_freq_khz: "14233.000".to_string(),
             tci_mode: "usb".to_string(),
+            input_device: None,
+            output_device: None,
+            input_gain: 1.0,
+            output_gain: 1.0,
         }
     }
 }
@@ -1477,6 +1486,10 @@ impl KgstvApp {
             tci_tx_audio: self.tci_tx_audio,
             tci_freq_khz: self.tci_freq_khz.clone(),
             tci_mode: self.tci_mode.clone(),
+            input_device: self.selected_input_device.clone(),
+            output_device: self.selected_output_device.clone(),
+            input_gain: self.input_gain,
+            output_gain: self.output_gain,
         }
     }
 
@@ -1518,6 +1531,13 @@ impl KgstvApp {
         self.tci_tx_audio = s.tci_tx_audio;
         self.tci_freq_khz = s.tci_freq_khz;
         self.tci_mode = s.tci_mode;
+        // A saved device that is not present now (unplugged, or its ID changed) falls back to the
+        // system default — otherwise live decode / transmit would fail with "device not found".
+        self.selected_input_device = s.input_device.filter(|id| self.input_devices.iter().any(|d| &d.id == id));
+        self.selected_output_device = s.output_device.filter(|id| self.output_devices.iter().any(|d| &d.id == id));
+        let gain = |g: f32| if g.is_finite() { g.clamp(0.0, 4.0) } else { 1.0 };
+        self.input_gain = gain(s.input_gain);
+        self.output_gain = gain(s.output_gain);
     }
 }
 
