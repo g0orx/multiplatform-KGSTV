@@ -4,6 +4,24 @@
 JJ0OBZ (K.G., Niigata-Myoko, Japan) that runs on Windows, Linux, macOS and (if possible)
 iOS/Android, and is compatible with original KG-STV stations on the air.
 
+**Modifications by G0ORX** (in this fork):
+
+- **English translation** — all Turkish text in the code, comments, UI and documentation translated to English.
+- **Audio device selection fix** — devices are identified by their unique ID instead of their display name, fixing
+  "Input device not found: Default Audio Device" and mix-ups between devices with the same name.
+- **TCI radio control and audio** — connect to a TCI server (ExpertSDR, piHPSDR, deskHPSDR ...; default port
+  50001), show and tune the frequency and mode (with SSTV band presets), receive audio from the radio for live
+  decoding, and transmit through the radio (keys PTT, TX audio paced by TX_CHRONO).
+- **4L-FSK transmit fix** — at 44.1 kHz the transmitter drifted in phase and timing, so large 4L-FSK image tiles
+  failed CRC even on a clean recording. All modulation now uses one continuous-phase synthesizer on an exact
+  1200-baud timeline.
+- **Send Text / Send Image buttons** — "Send" is now "📨 Send Text" (callsign and message only) and "Play" is now
+  "📤 Send Image" (image and text, encoding first if needed), both with tooltips. An encoding is discarded when
+  the callsign, message, Scale, CONV or 4L-FSK setting changes, so an outdated encoding is never sent.
+- **Settings remembered between restarts** — callsign, message, TX options, TCI options, audio devices and level
+  sliders.
+- **Window title** — shows "(with mods by G0ORX)".
+
 ## Status
 
 The protocol has been **verified** by bit-level reverse engineering against a translation of the
