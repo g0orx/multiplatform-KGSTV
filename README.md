@@ -10,7 +10,7 @@ iOS/Android, and is compatible with original KG-STV stations on the air.
 - **Audio device selection fix** — devices are identified by their unique ID instead of their display name, fixing
   "Input device not found: Default Audio Device" and mix-ups between devices with the same name.
 - **TCI radio control and audio** — connect to a TCI server (ExpertSDR, piHPSDR, deskHPSDR ...; default port
-  50001), show and tune the frequency and mode (with SSTV presets for HF and QO-100), receive audio from the radio for live
+  50001), show and tune the frequency and mode (with SSTV presets for HF, QO-100 and the ISS), receive audio from the radio for live
   decoding, and transmit through the radio (keys PTT, TX audio paced by TX_CHRONO).
 - **4L-FSK transmit fix** — at 44.1 kHz the transmitter drifted in phase and timing, so large 4L-FSK image tiles
   failed CRC even on a clean recording. All modulation now uses one continuous-phase synthesizer on an exact

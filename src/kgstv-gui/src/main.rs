@@ -503,7 +503,7 @@ impl KgstvApp {
                         .selected_text(self.tci_mode.to_uppercase())
                         .width(70.0)
                         .show_ui(ui, |ui| {
-                            for m in ["usb", "digu", "lsb", "digl"] {
+                            for m in ["usb", "digu", "lsb", "digl", "nfm"] {
                                 ui.selectable_value(&mut self.tci_mode, m.to_string(), m.to_uppercase());
                             }
                         });
@@ -515,27 +515,30 @@ impl KgstvApp {
                 });
                 ui.horizontal_wrapped(|ui| {
                     ui.label("SSTV:");
-                    // (button label, frequency in kHz). QO-100: the typical KG-STV frequency on the
-                    // QO-100 (Es'hail-2) narrowband transponder downlink, 10,489.625 MHz.
-                    let presets: [(&str, f64); 6] = [
-                        ("3733", 3733.0),
-                        ("7173", 7173.0),
-                        ("14233", 14233.0),
-                        ("21340", 21340.0),
-                        ("28680", 28680.0),
-                        ("QO-100", 10_489_625.0),
+                    // (button label, frequency in kHz, TCI mode, hover text). Each preset also sets
+                    // the mode, so switching from the FM ISS preset back to an SSB one restores USB.
+                    // QO-100: the typical KG-STV frequency on the QO-100 (Es'hail-2) narrowband
+                    // transponder downlink. ISS: the ARISS SSTV downlink, narrow FM (TCI mode "nfm").
+                    let presets: [(&str, f64, &str, Option<&str>); 7] = [
+                        ("3733", 3733.0, "usb", None),
+                        ("7173", 7173.0, "usb", None),
+                        ("14233", 14233.0, "usb", None),
+                        ("21340", 21340.0, "usb", None),
+                        ("28680", 28680.0, "usb", None),
+                        ("QO-100", 10_489_625.0, "usb", Some("QO-100 downlink, 10,489.625 MHz USB")),
+                        ("ISS", 437_800.0, "nfm", Some("ISS SSTV downlink, 437.800 MHz FM (no Doppler correction)")),
                     ];
-                    for (label, khz) in presets {
-                        let button = ui.small_button(label);
-                        let button = if label == "QO-100" {
-                            button.on_hover_text("QO-100 downlink, 10,489.625 MHz")
-                        } else {
-                            button
-                        };
+                    for (label, khz, mode, hover) in presets {
+                        let mut button = ui.small_button(label);
+                        if let Some(h) = hover {
+                            button = button.on_hover_text(h);
+                        }
                         if button.clicked() {
                             self.tci_freq_khz = format!("{khz:.3}");
+                            self.tci_mode = mode.to_string();
                             if let Some(c) = &self.tci {
                                 c.set_frequency((khz * 1000.0).round() as u64);
+                                c.set_modulation(mode);
                             }
                         }
                     }
