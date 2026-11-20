@@ -100,6 +100,48 @@ enum TxMsg {
     PlaybackError(String),
 }
 
+/// Key under which `PersistedSettings` is stored by eframe's persistence (saved on exit and
+/// periodically, in the platform's app-data directory).
+const SETTINGS_KEY: &str = "kgstv_settings";
+
+/// User settings remembered between restarts: TX options, callsign/message and TCI options.
+/// `#[serde(default)]` keeps older/newer settings files loadable — missing fields fall back to
+/// the `Default` values (which mirror `KgstvApp::default()`).
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct PersistedSettings {
+    tx_callsign: String,
+    tx_message: String,
+    tx_quality: u8,
+    tx_conv: bool,
+    tx_fsk4: bool,
+    tci_host: String,
+    tci_port: u16,
+    tci_rx_audio: bool,
+    tci_tx_audio: bool,
+    tci_freq_khz: String,
+    tci_mode: String,
+}
+
+impl Default for PersistedSettings {
+    /// Must mirror the corresponding initial values in `KgstvApp::default()`.
+    fn default() -> Self {
+        PersistedSettings {
+            tx_callsign: String::new(),
+            tx_message: String::new(),
+            tx_quality: 10,
+            tx_conv: false,
+            tx_fsk4: false,
+            tci_host: "127.0.0.1".to_string(),
+            tci_port: kgstv_modem::TCI_DEFAULT_PORT,
+            tci_rx_audio: false,
+            tci_tx_audio: false,
+            tci_freq_khz: "14233.000".to_string(),
+            tci_mode: "usb".to_string(),
+        }
+    }
+}
+
 struct KgstvApp {
     image_rgba: Vec<u8>,
     texture: Option<egui::TextureHandle>,
@@ -1392,7 +1434,43 @@ fn paint_eye_diagram(ui: &mut egui::Ui, rect: egui::Rect, points: &[(f32, f32)])
     }
 }
 
+impl KgstvApp {
+    fn persisted_settings(&self) -> PersistedSettings {
+        PersistedSettings {
+            tx_callsign: self.tx_callsign.clone(),
+            tx_message: self.tx_message.clone(),
+            tx_quality: self.tx_quality,
+            tx_conv: self.tx_conv,
+            tx_fsk4: self.tx_fsk4,
+            tci_host: self.tci_host.clone(),
+            tci_port: self.tci_port,
+            tci_rx_audio: self.tci_rx_audio,
+            tci_tx_audio: self.tci_tx_audio,
+            tci_freq_khz: self.tci_freq_khz.clone(),
+            tci_mode: self.tci_mode.clone(),
+        }
+    }
+
+    fn apply_persisted_settings(&mut self, s: PersistedSettings) {
+        self.tx_callsign = s.tx_callsign;
+        self.tx_message = s.tx_message;
+        self.tx_quality = s.tx_quality.min(15);
+        self.tx_conv = s.tx_conv;
+        self.tx_fsk4 = s.tx_fsk4;
+        self.tci_host = s.tci_host;
+        self.tci_port = if s.tci_port == 0 { kgstv_modem::TCI_DEFAULT_PORT } else { s.tci_port };
+        self.tci_rx_audio = s.tci_rx_audio;
+        self.tci_tx_audio = s.tci_tx_audio;
+        self.tci_freq_khz = s.tci_freq_khz;
+        self.tci_mode = s.tci_mode;
+    }
+}
+
 impl eframe::App for KgstvApp {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, SETTINGS_KEY, &self.persisted_settings());
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.drain_messages();
@@ -1755,6 +1833,11 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(move |cc| {
             let mut app = KgstvApp::default();
+            if let Some(settings) =
+                cc.storage.and_then(|st| eframe::get_value::<PersistedSettings>(st, SETTINGS_KEY))
+            {
+                app.apply_persisted_settings(settings);
+            }
             if let Some(path) = cli_wav_path {
                 app.open_file(&cc.egui_ctx, path);
             }
