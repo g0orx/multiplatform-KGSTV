@@ -135,7 +135,7 @@ struct KgstvApp {
     tci_port: u16,
     /// Live decode takes its audio from the radio's TCI RX stream instead of the sound card.
     tci_rx_audio: bool,
-    /// "Play"/"Send" transmits through the radio over TCI (keys PTT) instead of the sound card.
+    /// "Play"/"Send Text" transmits through the radio over TCI (keys PTT) instead of the sound card.
     tci_tx_audio: bool,
     /// Frequency entry box (kHz) and mode selection for tuning the radio.
     tci_freq_khz: String,
@@ -779,7 +779,7 @@ impl KgstvApp {
     /// Encodes the 300 tiles (+ optional callsign/text frame) and converts them into MSK audio.
     /// `include_image`: when `false`, the 300 image tiles are not added at all — only the callsign
     /// (if any) + text are sent (user request: "the send next to the text box should send only
-    /// the text" — for the "📨 Send" shortcut next to the Message box, so it quickly sends only the
+    /// the text" — for the "📨 Send Text" shortcut next to the Message box, so it quickly sends only the
     /// text without encoding the image).
     fn start_tx_encode(&mut self, ctx: &egui::Context, include_image: bool) {
         self.tx_encoding = true;
@@ -961,7 +961,7 @@ impl KgstvApp {
 
     fn drain_tx_messages(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.tx_rx else { return };
-        // "📨 Send" button: to automatically start playback once encoding finishes — while `self.tx_rx`
+        // "📨 Send Text" button: to automatically start playback once encoding finishes — while `self.tx_rx`
         // is borrowed we cannot directly call `play_tx`, which needs `&mut self` (borrow
         // checker), so we ONLY collect the flag here and apply it below once the loop ends (once
         // the borrow is released).
@@ -976,7 +976,7 @@ impl KgstvApp {
                 // and dies without sending a final message, the channel becomes "Disconnected" —
                 // previously this case was handled the SAME way as `Empty` (silently leaving
                 // the loop), i.e. `tx_encoding`/`tx_playing` stayed `true` FOREVER and
-                // "Encoding.../Playing..." stayed stuck on screen, with the "📨 Send"/"🔊 Play"
+                // "Encoding.../Playing..." stayed stuck on screen, with the "📨 Send Text"/"🔊 Play"
                 // buttons permanently disabled (the user, without noticing this,
                 // kept retrying, and it seemed "not to send" until the application was
                 // probably restarted at some point). Now when the connection drops,
@@ -1605,7 +1605,8 @@ impl eframe::App for KgstvApp {
                     // does NOT INCLUDE the 300-tile image, it only encodes the callsign (if any) + text
                     // (`include_image=false`) — a quick text-only send shortcut.
                     if ui
-                        .add_enabled(!self.tx_encoding && !self.tx_playing, egui::Button::new("📨 Send"))
+                        .add_enabled(!self.tx_encoding && !self.tx_playing, egui::Button::new("📨 Send Text"))
+                        .on_hover_text("Sends only the callsign and message (not the image). Use ⚙ Encode then 🔊 Play to send the image.")
                         .clicked()
                     {
                         self.tx_auto_play_after_encode = true;
