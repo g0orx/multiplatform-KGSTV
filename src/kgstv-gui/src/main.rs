@@ -487,7 +487,7 @@ impl KgstvApp {
             }
             ui.add_enabled_ui(connected, |ui| {
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.tci_freq_khz).desired_width(90.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.tci_freq_khz).desired_width(110.0));
                     ui.label("kHz");
                     if ui.button("Tune").clicked() {
                         match self.tci_freq_khz.trim().replace(',', ".").parse::<f64>() {
@@ -515,11 +515,27 @@ impl KgstvApp {
                 });
                 ui.horizontal_wrapped(|ui| {
                     ui.label("SSTV:");
-                    for khz in [3733.0, 7173.0, 14233.0, 21340.0, 28680.0] {
-                        if ui.small_button(format!("{khz:.0}")).clicked() {
+                    // (button label, frequency in kHz). QO-100: the typical KG-STV frequency on the
+                    // QO-100 (Es'hail-2) narrowband transponder downlink, 10,489.625 MHz.
+                    let presets: [(&str, f64); 6] = [
+                        ("3733", 3733.0),
+                        ("7173", 7173.0),
+                        ("14233", 14233.0),
+                        ("21340", 21340.0),
+                        ("28680", 28680.0),
+                        ("QO-100", 10_489_625.0),
+                    ];
+                    for (label, khz) in presets {
+                        let button = ui.small_button(label);
+                        let button = if label == "QO-100" {
+                            button.on_hover_text("QO-100 downlink, 10,489.625 MHz")
+                        } else {
+                            button
+                        };
+                        if button.clicked() {
                             self.tci_freq_khz = format!("{khz:.3}");
                             if let Some(c) = &self.tci {
-                                c.set_frequency((khz * 1000.0) as u64);
+                                c.set_frequency((khz * 1000.0).round() as u64);
                             }
                         }
                     }
