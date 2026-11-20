@@ -1912,13 +1912,15 @@ fn main() -> eframe::Result<()> {
             // default window too (the adaptive scale already guarantees it is never cropped in smaller
             // windows; this just aims for a better default).
             .with_inner_size([1150.0, 960.0])
-            .with_title("Atölye m-KGSTV"),
+            .with_title("Atölye m-KGSTV (with mods by G0ORX)"),
         ..Default::default()
     };
     // Optional: if invoked as `kgstv-gui <recording.wav>`, automatically loads that file at
     // startup (handy for quick testing/scripting without dealing with the native file picker).
     let cli_wav_path = std::env::args().nth(1).map(PathBuf::from);
     eframe::run_native(
+        // App ID: also names the folder eframe saves the persisted settings in — keep it unchanged
+        // so existing saved settings are still found (the window title is set separately above).
         "Atölye m-KGSTV",
         options,
         Box::new(move |cc| {
